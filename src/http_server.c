@@ -20,7 +20,7 @@ typedef struct {
     HANDLE        done;
     char          method[8];
     char          path[256];
-    char          query[512];
+    char          query[2048];
     int           status;
     Sb            json;
 } Req;
@@ -105,7 +105,7 @@ static void handle_client(SOCKET c)
     char buf[8192];
     int got = 0;
     DWORD to = 5000;
-    char method[8] = {0}, target[768] = {0}, *qm, *json;
+    char method[8] = {0}, target[2400] = {0}, *qm, *json;
     int status;
     int is_health;
 
@@ -119,13 +119,13 @@ static void handle_client(SOCKET c)
     }
     if (got <= 0) return;
     buf[got] = 0;
-    if (sscanf(buf, "%7s %767s", method, target) != 2) {
+    if (sscanf(buf, "%7s %2399s", method, target) != 2) {
         send_response(c, 400, "{\"ok\": false, \"error\": \"bad request\"}\n");
         return;
     }
     qm = strchr(target, '?');
     if (qm) *qm++ = 0;
-    if (strlen(target) > 255 || (qm && strlen(qm) > 511)) {
+    if (strlen(target) > 255 || (qm && strlen(qm) > 2047)) {
         send_response(c, 400, "{\"ok\": false, \"error\": \"request too long\"}\n");
         return;
     }

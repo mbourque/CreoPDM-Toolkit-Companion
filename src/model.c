@@ -359,9 +359,7 @@ void collect_mass(Sb *out, const Ctx *c, const Query *q)
             jw_end_arr(&w);
         }
         jw_end_arr(&w);
-    } else {
-        jw_null(&w, "principal_moments");
-    }
+    }   /* no principal_moments / tensor key when they could not be derived (component-sum assembly mass) */
     jw_end_obj(&w);
     jw_str(&w, "method", method);
     close_doc(&w, out);

@@ -194,13 +194,47 @@ static const char *mdl_ext(ProMdlType t)
     }
 }
 
+int q_get_dec(const Query *q, const char *key, char *buf, int bufsz)
+{
+    char *raw = (char *)malloc(bufsz * 3 + 8);
+    int found, i, o = 0;
+    if (!raw) return 0;
+    found = q_get(q, key, raw, bufsz * 3);
+    if (found) {
+        for (i = 0; raw[i] && o < bufsz - 1; i++) {
+            if (raw[i] == '%' && isxdigit((unsigned char)raw[i + 1]) && isxdigit((unsigned char)raw[i + 2])) {
+                char h[3] = { raw[i + 1], raw[i + 2], 0 };
+                buf[o++] = (char)strtol(h, NULL, 16);
+                i += 2;
+            } else if (raw[i] == '+') {
+                buf[o++] = ' ';
+            } else {
+                buf[o++] = raw[i];
+            }
+        }
+        buf[o] = 0;
+    }
+    free(raw);
+    return found;
+}
+
 int ctx_load(Ctx *c)
+{
+    ProMdl cur = NULL;
+    memset(c, 0, sizeof *c);
+    c->typeStr = "NONE";
+    if (ProMdlCurrentGet(&cur) != PRO_TK_NO_ERROR || !cur) return 0;
+    return ctx_for_model(c, cur);
+}
+
+int ctx_for_model(Ctx *c, ProMdl mdl)
 {
     ProMdlName nm;
     char u[200];
     memset(c, 0, sizeof *c);
     c->typeStr = "NONE";
-    if (ProMdlCurrentGet(&c->mdl) != PRO_TK_NO_ERROR || !c->mdl) return 0;
+    c->mdl = mdl;
+    if (!c->mdl) return 0;
     if (ProMdlTypeGet(c->mdl, &c->type) != PRO_TK_NO_ERROR) return 0;
     if (ProMdlMdlnameGet(c->mdl, nm) != PRO_TK_NO_ERROR) return 0;
     w2u(nm, u, sizeof u);

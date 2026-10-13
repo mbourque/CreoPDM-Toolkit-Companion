@@ -175,3 +175,28 @@ Owner resolution, in order, using Toolkit links only (no visit-order or "first o
    Used by several operations, or used by none -> left unowned.
 Unowned features keep `level`/`parent_id`/`parent_basis` null and `"nesting"` stays in `partial_missing` (with `partial:true`); it is removed once nothing is unowned. Features that are
 not geometry-related but still unowned (e.g. a stray `OTHER` feature) also count, so `nesting` can remain listed even when all windows are parented; check which rows have `level:null`.
+
+## Collecting a model other than the active one (no windows)
+Every domain endpoint and `/collect` accept `?fileName=<name.ext[.N]>&path=<absolute path to the file>` (URL-encode the path). Without `fileName` the active model is used.
+- `fileName` already in session -> used as is (nothing opened, nothing erased).
+- Not in session -> retrieved **silently** with `ProMdlFiletypeLoad(path, type, ask_user_about_reps=FALSE)`: the model is loaded into memory but **not displayed, no window/tab is created, and it does not
+  become the current model**. `path` may be the file or its folder. A missing `path` for a model that is not in session returns `{ok:false,"... is not in session; pass path= ..."}` (never a windowed open).
+- After the request, a model **this call retrieved** is erased with `ProMdlErase` (that single model only; never `ProMdlEraseAll`, never anything that was already in session, never the current model).
+  Components pulled in with an assembly stay in session, undisplayed. `?keep=1` leaves the retrieved model in session as well.
+- Example: `Invoke-RestMethod "http://127.0.0.1:8767/collect?domains=identity,features&fileName=base-plate.prt&path=C%3A%5Cmodels%5Cbase-plate.prt.4"`
+- Not yet verified in Creo: run it for 20+ different parts and confirm the window/tab count does not grow.
+
+### `/structure` row shape (Creo.JS Structure rows)
+`{id, name, featureName, type, subtype, level, status, suppressed, path}` (+ `expanded` with `?recurse=1`). `name` is always the model tip with extension (`shaft.prt`, `sub.asm`, lowercase, no `.N`);
+`type` is PART | ASSEMBLY | SKELETON (never COMPONENT); `subtype` is `""`; `path` is the component id path (`"46"` top level, `"40/669"` nested). Only real components are walked,
+so datums, CSYS and cross-sections cannot appear (they are in `/features`). In `/mfg`, `models[]` rows use the same `name`/`type` plus `role`.
+
+## Collect contract (summary)
+`GET|POST /collect?domains=a,b,c[&fileName=<name.ext[.N]>&path=<abs path>][&keep=1][&recurse=0|1][&cells=1]`
+- **Target:** `fileName` (+ `path`) picks the model; without it the active model is used. In session -> used as is. Not in session -> ONE silent retrieve (`ProMdlFiletypeLoad`, no display/window). No `path` and not in session -> `ok:false`.
+- **One retrieve per request:** all requested domains run on that single in-session model; nothing is retrieved or erased between domains. (Separate HTTP calls for the same file are separate requests; use one `/collect` with all domains instead, or `keep=1`.)
+- **`domains`:** comma list (`identity,parameters,features,materials,mass,units,...`); omitted/`all` = every domain that applies to the model type.
+- **Erase:** default = after the request, a model THIS call retrieved is erased (`ProMdlErase`, that model only; never one already in session, never the current model). **`keep=1`** skips the erase, so the model stays in session (undisplayed) and later calls for it reuse it with no reload (`retrieved:false`, `retrieve_ms` ~0). The caller owns cleanup of kept models (or leave them). Components pulled in with an assembly always stay in session.
+- **Single-threaded / queued:** all Toolkit work runs on Creo's main thread and requests are handled strictly one at a time; concurrent callers queue (30 s per-request timeout, `CREOPDM_TOOLKIT_TIMEOUT_MS`).
+- **`timings_ms`** is appended to every `/collect` and single-domain response: `{retrieved, retrieve_ms, <domain>_ms for each domain that ran, erase_ms, total_ms}`. The same line is written to `%TEMP%\creopdm_toolkit.log`, e.g.
+  `/collect base-plate.prt retrieved=1 retrieve=842ms identity=1ms features=6ms mass=3ms erase=2ms total=861ms`.

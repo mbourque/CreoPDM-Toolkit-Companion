@@ -137,22 +137,28 @@ static void structure_cb(const CompInfo *ci, void *ud)
 {
     StructOut *so = (StructOut *)ud;
     Jw *w = so->w;
+    char p[256];
+    int i, n = 0;
+
+    /* Row shape matches Creo.JS Structure rows: id, name (model tip WITH extension), type (PART |
+       ASSEMBLY | SKELETON, never COMPONENT), subtype, level, status, suppressed, path. Only real
+       components are walked, so datums / CSYS / cross-sections cannot appear here. */
+    p[0] = 0;
+    for (i = 0; i < ci->pathLen && n < 230; ++i)
+        n += sprintf(p + n, i ? "/%d" : "%d", ci->path[i]);
+
     jw_obj(w, NULL);
     jw_int(w, "id", ci->id);
     jw_str(w, "name", ci->file);
     jw_str(w, "featureName", ci->featName[0] ? ci->featName : NULL);
     jw_str(w, "type", ci->kind);
+    jw_str(w, "subtype", "");
     jw_int(w, "level", ci->level);
     jw_str(w, "status", ci->status);
     jw_bool(w, "suppressed", ci->suppressed);
-    if (so->recurse) {
-        char p[256]; int i, n = 0;
-        p[0] = 0;
-        for (i = 0; i < ci->pathLen && n < 230; ++i)
-            n += sprintf(p + n, i ? "/%d" : "%d", ci->path[i]);
-        jw_str(w, "path", p);
+    jw_str(w, "path", p);
+    if (so->recurse)
         jw_bool(w, "expanded", ci->mdl != NULL && strcmp(ci->kind, "ASSEMBLY") == 0 && !ci->suppressed);
-    }
     jw_end_obj(w);
     so->count++;
 }

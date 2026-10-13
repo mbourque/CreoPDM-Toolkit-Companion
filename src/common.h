@@ -58,7 +58,8 @@ void  emit_errorf(Sb *out, const char *fmt, ...);
 typedef struct {
     const char *query;      /* raw query string without '?', may be "" */
 } Query;
-int  q_get(const Query *q, const char *key, char *buf, int bufsz);  /* 1 if present */
+int  q_get(const Query *q, const char *key, char *buf, int bufsz);  /* 1 if present (raw) */
+int  q_get_dec(const Query *q, const char *key, char *buf, int bufsz);  /* URL-decoded (%XX, +) */
 
 typedef struct {
     int         has;            /* a model is current */
@@ -68,6 +69,7 @@ typedef struct {
     const char *typeStr;        /* PART|ASSEMBLY|DRAWING|MFG|LAYOUT|... */
 } Ctx;
 int  ctx_load(Ctx *c);          /* fills from the current model */
+int  ctx_for_model(Ctx *c, ProMdl mdl);   /* fills from a given model handle */
 const char *mdl_type_str(ProMdlType t);
 
 /* ---------- collectors: each writes a complete JSON object into *out ---------- */
