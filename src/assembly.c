@@ -51,7 +51,7 @@ static const char *constr_type(ProAsmcompConstrType t)
     case PRO_ASM_EDGE_ON_SRF_PARL:    return "EDGE_ON_SRF_PARALLEL";
     case PRO_ASM_SRF_NORMAL:          return "SRF_NORMAL";
     case PRO_ASM_EXPLICIT:            return "EXPLICIT";
-    case PRO_ASM_TANGENT_ALIGN:       return "TANGENT_ALIGN";
+    case 36:                          return "TANGENT_ALIGN";   /* PRO_ASM_TANGENT_ALIGN; matched by value: the enum name is missing in older SDKs */
     case PRO_ASM_UNDEF:        return "UNDEFINED";
     default:                   return "UNKNOWN";
     }

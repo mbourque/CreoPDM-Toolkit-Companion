@@ -319,3 +319,10 @@ for any harness no component feature references (`id:null`), and (3) with `recur
 `ProAssemblyHarnessesTopCollect` / `ProAssemblyHarnessesCollect` return codes and model names, spools, connector count, every `GROUP_HEAD` with its members (feature id/type/name and, for component members, the model name and
 whether it is in memory), and all cabling-type features (cable, cable segment, sub-harness, ribbon cable). If a harness tip is not in `harnessesTop`/`harnessesAll` and not a component member of a group, Toolkit does not expose it as a
 model for that assembly, and `/structure`/`/bom` cannot list it.
+
+## Target release / building for Creo 10 (and later)
+`build.bat` and `unlock.bat` use the Toolkit SDK and unlock script of `%CREO_HOME%` (default `C:\PTC\Creo 10.0.10.0`; override with `set CREO_HOME=C:\PTC\Creo 13.4.1.0`). The DLL is built against the OLDEST release you need and is
+meant to load in that release and later (not the reverse). Source differences between SDKs are handled at compile time: drawing tables use `ProTable` when `ProTable.h` exists (Creo 11+ SDKs) and the older `ProDwgtable*` API otherwise
+(Creo 8-10 SDKs; deprecated but still present in newer Creo); the `TANGENT_ALIGN` constraint label is matched by value (36). A Creo 10 SDK build therefore uses `ProDwgtable*` everywhere, including when run in Creo 13.
+Unlock once with the build's `CREO_HOME`; if a newer Creo reports the app "was not unlocked before distribution", run that release's `protk_unlock.bat` on the same DLL (safe to repeat).
+Not yet tested at run time in Creo 10 or 13. Files last saved in a newer release than the Creo that opens them cannot be retrieved (`ProMdlFiletypeLoad=-1`).

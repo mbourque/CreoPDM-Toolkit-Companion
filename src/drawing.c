@@ -7,7 +7,34 @@
 #include <ProDrawing.h>
 #include <ProDimension.h>
 #include <ProDtlnote.h>
+/* Drawing tables: ProTable (Creo 11+) when the SDK has it, else the older ProDwgtable API (Creo 8-10; deprecated but still
+   present in newer releases). Chosen at compile time from the SDK the DLL is built against. */
+#if defined(__has_include)
+# if __has_include(<ProTable.h>)
+#  define CPDM_NEW_TABLE_API 1
+# endif
+#endif
+#ifdef CPDM_NEW_TABLE_API
 #include <ProTable.h>
+typedef ProTable CpdmTable;
+# define CP_TABLES_COLLECT(drw, pt)      ProTablesCollect((ProMdl)(drw), (pt))
+# define CP_SEG_COUNT(t, pn)             ProTableSegCount((t), (pn))
+# define CP_SEG_SHEET(t, seg, psh)       ProTableSegSheetGet((t), (seg), (psh))
+# define CP_CELLTEXT(t, c, r, pl)        ProTableCelltextGet((t), (c), (r), PROTABLE_NORMAL, (pl))
+static ProError cp_rows_cols(CpdmTable *t, int *r, int *c) { return ProTableRowsColumnsCount(t, r, c); }
+#else
+#include <ProDwgtable.h>
+typedef ProDwgtable CpdmTable;
+# define CP_TABLES_COLLECT(drw, pt)      ProDrawingTablesCollect((drw), (pt))
+# define CP_SEG_COUNT(t, pn)             ProDwgtableSegCount((t), (pn))
+# define CP_SEG_SHEET(t, seg, psh)       ProDwgtableSegSheetGet((t), (seg), (psh))
+# define CP_CELLTEXT(t, c, r, pl)        ProDwgtableCelltextGet((t), (c), (r), PRODWGTABLE_NORMAL, (pl))
+static ProError cp_rows_cols(CpdmTable *t, int *r, int *c)
+{
+    ProError a = ProDwgtableRowsCount(t, r), b = ProDwgtableColumnsCount(t, c);
+    return a != PRO_TK_NO_ERROR ? a : b;
+}
+#endif
 #include <ProModelitem.h>
 #include <ProMdlUnits.h>
 #include <ProArray.h>
@@ -356,21 +383,21 @@ static int collect_dims(DCtx *d, int *count)
 /* ---------- tables ---------- */
 static int collect_tables(DCtx *d, int *count, int with_cells)
 {
-    ProTable *tables = NULL;
+    CpdmTable *tables = NULL;
     int n = 0, i, bad = 0;
-    ProError rc = ProTablesCollect((ProMdl)d->drw, &tables);
+    ProError rc = CP_TABLES_COLLECT(d->drw, &tables);
     if (rc == PRO_TK_E_NOT_FOUND) return 0;
     if (rc != PRO_TK_NO_ERROR || !tables) return (int)rc;
     ProArraySizeGet((ProArray)tables, &n);
     for (i = 0; i < n; i++) {
-        ProTable *t = &tables[i];
+        CpdmTable *t = &tables[i];
         int rows = 0, cols = 0, sheet = 0, segs = 0;
         char idS[40], nm[96], par[24];
         ProName mn;
 
-        ProTableRowsColumnsCount(t, &rows, &cols);
-        ProTableSegCount(t, &segs);
-        if (ProTableSegSheetGet(t, 0, &sheet) != PRO_TK_NO_ERROR) ProTableSegSheetGet(t, 1, &sheet);
+        cp_rows_cols(t, &rows, &cols);
+        CP_SEG_COUNT(t, &segs);
+        if (CP_SEG_SHEET(t, 0, &sheet) != PRO_TK_NO_ERROR) CP_SEG_SHEET(t, 1, &sheet);
         nm[0] = 0;
         if (ProModelitemNameGet((ProModelitem *)t, mn) == PRO_TK_NO_ERROR) w2u(mn, nm, sizeof nm);
         if (!nm[0]) sprintf(nm, "Table %d", t->id);
@@ -401,7 +428,7 @@ static int collect_tables(DCtx *d, int *count, int with_cells)
                     char cell[512];
                     int nl = 0, k, len = 0;
                     cell[0] = 0;
-                    if (ProTableCelltextGet(t, c, r, PROTABLE_NORMAL, &lines) == PRO_TK_NO_ERROR && lines) {
+                    if (CP_CELLTEXT(t, c, r, &lines) == PRO_TK_NO_ERROR && lines) {
                         ProArraySizeGet((ProArray)lines, &nl);
                         for (k = 0; k < nl; k++) {
                             char u[200];

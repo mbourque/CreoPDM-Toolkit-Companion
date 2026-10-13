@@ -1,7 +1,10 @@
 @echo off
-rem Builds bin\creopdm_structure.dll against the Creo 13.4.1.0 Toolkit (64-bit).
+rem Builds bin\creopdm_structure.dll (64-bit) against the Toolkit SDK of the Creo install in CREO_HOME.
+rem Default target: Creo 10 (oldest supported release; the DLL is meant to load in 10 and later).
+rem Override:  set CREO_HOME=C:\PTC\Creo 13.4.1.0   before running build.bat / unlock.bat
 setlocal
-set "TK=C:\PTC\Creo 13.4.1.0\Common Files\protoolkit"
+if "%CREO_HOME%"=="" set "CREO_HOME=C:\PTC\Creo 10.0.10.0"
+set "TK=%CREO_HOME%\Common Files\protoolkit"
 set "LIBDIR=%TK%\x86e_win64\obj"
 set "VCVARS=C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 
@@ -24,4 +27,4 @@ link /nologo /dll /machine:amd64 /debug:none /out:bin\creopdm_structure.dll ^
    ole32.lib ws2_32.lib || exit /b 1
 
 echo.
-echo Built %~dp0bin\creopdm_structure.dll  (now run unlock.bat)
+echo Built %~dp0bin\creopdm_structure.dll against %CREO_HOME%  (now run unlock.bat)
