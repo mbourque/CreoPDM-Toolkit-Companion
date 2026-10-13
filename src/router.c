@@ -24,6 +24,8 @@ static const Domain DOMAINS[] = {
     { "simp_reps",   collect_simpreps,    M_A, M_A },
     { "drawing",     collect_drawing,     M_D, M_D },
     { "mfg",         collect_mfg,         M_M, M_M },
+    { "bom",         collect_bom,         M_A, 0 },      /* explicit only: not part of a default /collect */
+    { "harness_probe", collect_harness_probe, M_A, 0 },   /* diagnostic, explicit only: GET /harness-probe */
 };
 #define NDOM ((int)(sizeof DOMAINS / sizeof DOMAINS[0]))
 
@@ -220,11 +222,17 @@ static int parse_file_name(const char *fn, ProMdlName base, ProMdlfileType *ft)
     return 1;
 }
 
+/* Set by resolve_target when the requested file is a cabling harness (main thread only). */
+static int  g_is_harness;
+static char g_harness_full[1700];
+
+
 /* Find the model in session, else retrieve it SILENTLY from path (ProMdlFiletypeLoad:
    no display, no window, not made current). */
 static int resolve_target(const char *fn, const char *path, ProMdl *out_mdl, int *retrieved,
                           char *err, int errsz)
 {
+    g_is_harness = 0; g_harness_full[0] = 0;
     ProMdlName base;
     ProMdlfileType ft = PRO_MDLFILE_UNUSED;
     ProMdl m = NULL;
@@ -257,15 +265,128 @@ static int resolve_target(const char *fn, const char *path, ProMdl *out_mdl, int
         strncat(full, fn, sizeof full - pl - 1);
     }
     MultiByteToWideChar(CP_UTF8, 0, full, -1, wp, PRO_PATH_SIZE);
+    /* Cabling harness parts cannot be opened in isolation (Creo: "open the cabling assembly which contains
+       this harness"). Toolkit has no API to inspect a model without loading it, so read the file header line:
+       a harness is saved as "#UGC:2 PART/HARNESS_PART ...". Rejecting here avoids the load (and the Creo UI message). */
+    if (file_is_harness_w(wp)) {
+        g_is_harness = 1; strncpy(g_harness_full, full, sizeof g_harness_full - 1);
+        _snprintf(err, errsz, "harness_not_openable_in_isolation: open the cabling assembly that contains %s", fn);
+        err[errsz - 1] = 0;
+        return 0;
+    }
     rc = ProMdlFiletypeLoad(wp, ft, PRO_B_FALSE, &m);
     if (rc != PRO_TK_NO_ERROR || !m) {
-        _snprintf(err, errsz, "could not retrieve %s from path (ProMdlFiletypeLoad=%d)", fn, (int)rc);
+        DWORD attr = GetFileAttributesW(wp);
+        if (attr == INVALID_FILE_ATTRIBUTES)
+            _snprintf(err, errsz, "file_not_found: %s (ProMdlFiletypeLoad=%d)", full, (int)rc);
+        else if (file_is_harness_w(wp)) {   /* same check after a failed load, in case it could not run before */
+            g_is_harness = 1; strncpy(g_harness_full, full, sizeof g_harness_full - 1);
+            _snprintf(err, errsz, "harness_not_openable_in_isolation: open the cabling assembly that contains %s", fn);
+        }
+        else
+            _snprintf(err, errsz, "could not retrieve %s from path (ProMdlFiletypeLoad=%d)", fn, (int)rc);
         err[errsz - 1] = 0;
         return 0;
     }
     *retrieved = 1;
     *out_mdl = m;
     return 1;
+}
+
+/* ---------- cabling harness stub (file-header detection, nothing loaded) ---------- */
+static void harness_skip(Sb *r, const char *fn)
+{
+    emit_errorf(r, "harness_not_openable_in_isolation: open the cabling assembly that contains %s", fn);
+}
+
+/* Minimal identity from the file header only: no model handle exists. */
+static void harness_identity(Sb *r, const char *fn, const char *full)
+{
+    Jw w;
+    char tip[300];
+    strncpy(tip, fn, sizeof tip - 1);
+    tip[sizeof tip - 1] = 0;
+    lower_ascii(tip);
+    jw_init(&w, r);
+    jw_obj(&w, NULL);
+    jw_bool(&w, "ok", 1);
+    jw_str(&w, "fileName", tip);
+    jw_obj(&w, "identity");
+    jw_str(&w, "file_name", tip);
+    jw_str(&w, "model_type", "PART");
+    jw_str(&w, "model_role", "HARNESS");
+    jw_str(&w, "subtype", "HARNESS");
+    jw_str(&w, "origin", full);
+    jw_str(&w, "identity_source", "file_header");   /* not read from a loaded model */
+    jw_end_obj(&w);
+    jw_end_obj(&w);
+    sb_puts(r, "\n");
+}
+
+/* Response for a harness tip: identity succeeds; every domain that needs a loaded model is skipped. */
+static int route_harness(const char *path, const Query *q, const char *fn, const char *full, Sb *out)
+{
+    char dom[256], tok[48];
+    Jw w, bw;
+    Sb body = { 0 };
+    int i, first_all;
+
+    if (strcmp(path, "/identity") == 0) { harness_identity(out, fn, full); return 200; }
+    if (strcmp(path, "/collect") != 0) { harness_skip(out, fn); return 200; }
+
+    first_all = !(q_get(q, "domains", dom, sizeof dom) && dom[0] && strcmp(dom, "all") != 0);
+    jw_init(&bw, &body);
+    jw_obj(&bw, NULL);
+    if (first_all) {
+        for (i = 0; i < NDOM; i++) {
+            Sb r = { 0 };
+            if (!(DOMAINS[i].all_mask & M_P)) continue;          /* what a PART collect would include */
+            if (strcmp(DOMAINS[i].name, "identity") == 0) harness_identity(&r, fn, full);
+            else harness_skip(&r, fn);
+            trim_nl(&r);
+            jw_raw(&bw, DOMAINS[i].name, r.p);
+            sb_free(&r);
+        }
+    } else {
+        const char *p = dom;
+        while (*p) {
+            const char *comma = strchr(p, ',');
+            size_t n = comma ? (size_t)(comma - p) : strlen(p);
+            if (n >= sizeof tok) n = sizeof tok - 1;
+            memcpy(tok, p, n);
+            tok[n] = 0;
+            if (n) {
+                Sb r = { 0 };
+                const Domain *d = find_domain(tok);
+                if (!d) emit_errorf(&r, "unknown domain '%s'", tok);
+                else if (strcmp(d->name, "identity") == 0) harness_identity(&r, fn, full);
+                else harness_skip(&r, fn);
+                trim_nl(&r);
+                jw_raw(&bw, d ? d->name : tok, r.p);
+                sb_free(&r);
+            }
+            p = comma ? comma + 1 : p + strlen(p);
+        }
+    }
+    jw_end_obj(&bw);
+
+    {
+        char tip[300];
+        strncpy(tip, fn, sizeof tip - 1);
+        tip[sizeof tip - 1] = 0;
+        lower_ascii(tip);
+        jw_init(&w, out);
+        jw_obj(&w, NULL);
+        jw_bool(&w, "ok", 1);
+        jw_str(&w, "fileName", tip);
+        jw_str(&w, "type", "PART");
+        jw_bool(&w, "harness", 1);
+        jw_raw(&w, "domains", body.p);
+        jw_end_obj(&w);
+        sb_puts(out, "\n");
+    }
+    sb_free(&body);
+    return 200;
 }
 
 int route_request(const char *method, const char *path, const char *query, Sb *out)
@@ -321,7 +442,8 @@ int route_request(const char *method, const char *path, const char *query, Sb *o
             q_get_dec(&q, "path", pth, sizeof pth);
             t1 = now_ms();
             if (!resolve_target(fn, pth, &target, &retrieved, emsg, sizeof emsg)) {
-                emit_error(out, emsg);
+                if (g_is_harness) route_harness(path, &q, fn, g_harness_full, out);   /* identity ok, rest skipped */
+                else emit_error(out, emsg);
                 g_tm.retrieve_ms = now_ms() - t1;
                 g_tm.total_ms = now_ms() - t_start;
                 append_timings(out);
@@ -331,8 +453,17 @@ int route_request(const char *method, const char *path, const char *query, Sb *o
             g_tm.retrieve_ms = now_ms() - t1;    /* ~0 when the model was already in session */
             g_tm.retrieved = retrieved;
             ctx_for_model(&c, target);
+            if (!c.has) {
+                emit_errorf(out, "model handle for %s is not usable (type could not be read)", fn);
+                g_tm.total_ms = now_ms() - t_start;
+                append_timings(out);
+                log_timings(path, fn);
+                return 200;
+            }
+            ctx_fallback_name(&c, fn);       /* identity.file_name must never be empty: use the requested tip */
         }
         if (!c.has) { emit_error(out, "No active model in session"); return 200; }
+        if (!c.fileName[0]) { emit_error(out, "model has no usable name (handle returned none and no fileName was requested)"); return 200; }
 
         if (strcmp(path, "/collect") == 0) {
             do_collect(out, &c, &q);

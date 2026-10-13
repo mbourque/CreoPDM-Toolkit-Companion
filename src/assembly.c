@@ -124,6 +124,8 @@ static void cons_cb(const CompInfo *ci, void *ud)
 {
     ConsCtx *cc = (ConsCtx *)ud;
     Jw *w = cc->w;
+
+    if (!ci->feat) return;                     /* harness listed only by Toolkit's harness list: no component feature */
     ProAsmcompconstraint *arr = NULL;
     ProAsmcomppath owner;
     ProAsmcomppath *ownerp = NULL;

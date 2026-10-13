@@ -50,6 +50,8 @@ void jw_wstr(Jw *w, const char *key, const wchar_t *v);
 /* ---------- helpers ---------- */
 void  w2u(const wchar_t *w, char *out, int outsz);   /* UTF-16 -> UTF-8 */
 void  lower_ascii(char *s);
+int   is_noname_u(const char *u);                    /* "no_name" (any case): Creo placeholder for unnamed hidden features */
+int   file_is_harness_w(const wchar_t *wpath);       /* first line of the file says PART/HARNESS_PART */
 void  logf_(const char *fmt, ...);                   /* %TEMP%\creopdm_toolkit.log */
 void  emit_error(Sb *out, const char *msg);          /* resets *out to {"ok":false,...} */
 void  emit_errorf(Sb *out, const char *fmt, ...);
@@ -70,6 +72,7 @@ typedef struct {
 } Ctx;
 int  ctx_load(Ctx *c);          /* fills from the current model */
 int  ctx_for_model(Ctx *c, ProMdl mdl);   /* fills from a given model handle */
+void ctx_fallback_name(Ctx *c, const char *requested);   /* use requested tip if the handle has no name */
 const char *mdl_type_str(ProMdlType t);
 
 /* ---------- collectors: each writes a complete JSON object into *out ---------- */
@@ -87,6 +90,8 @@ void collect_constraints(Sb *out, const Ctx *c, const Query *q);
 void collect_simpreps  (Sb *out, const Ctx *c, const Query *q);
 void collect_drawing   (Sb *out, const Ctx *c, const Query *q);
 void collect_mfg       (Sb *out, const Ctx *c, const Query *q);
+void collect_bom       (Sb *out, const Ctx *c, const Query *q);
+void collect_harness_probe(Sb *out, const Ctx *c, const Query *q);
 
 /* ---------- component walker (structure + constraints) ---------- */
 #define WALK_MAX_DEPTH 16
@@ -100,6 +105,9 @@ typedef struct {
     ProMdl      mdl;            /* referenced model if in session, else NULL */
     char        file[256];      /* logical file name, lowercase */
     const char *kind;           /* PART|ASSEMBLY|SKELETON */
+    int         skel;           /* 1 skeleton, 0 not, -1 unknown (model not in memory) */
+    int         harness;        /* cabling harness member */
+    int         synthetic;      /* row built from the harness list; feat is NULL */
     char        featName[128];  /* "" if none */
     const char *status;
     int         suppressed;

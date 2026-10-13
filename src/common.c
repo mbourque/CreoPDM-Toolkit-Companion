@@ -236,12 +236,43 @@ int ctx_for_model(Ctx *c, ProMdl mdl)
     c->mdl = mdl;
     if (!c->mdl) return 0;
     if (ProMdlTypeGet(c->mdl, &c->type) != PRO_TK_NO_ERROR) return 0;
-    if (ProMdlMdlnameGet(c->mdl, nm) != PRO_TK_NO_ERROR) return 0;
-    w2u(nm, u, sizeof u);
-    _snprintf(c->fileName, sizeof c->fileName, "%s%s", u, mdl_ext(c->type));
-    c->fileName[sizeof c->fileName - 1] = 0;
-    lower_ascii(c->fileName);
+    u[0] = 0;
+    if (ProMdlMdlnameGet(c->mdl, nm) == PRO_TK_NO_ERROR) w2u(nm, u, sizeof u);
+    if (u[0]) {
+        _snprintf(c->fileName, sizeof c->fileName, "%s%s", u, mdl_ext(c->type));
+        c->fileName[sizeof c->fileName - 1] = 0;
+        lower_ascii(c->fileName);
+    }   /* else fileName stays empty: caller may fall back to the requested tip */
     c->typeStr = mdl_type_str(c->type);
     c->has = 1;
     return 1;
+}
+
+int is_noname_u(const char *u)
+{
+    return u && _stricmp(u, "no_name") == 0;
+}
+
+/* When the handle gave no usable name, use the tip the caller asked for (e.g. "shaft.prt" or "shaft.prt.2"). */
+void ctx_fallback_name(Ctx *c, const char *requested)
+{
+    if (c->has && !c->fileName[0] && requested && requested[0]) {
+        strncpy(c->fileName, requested, sizeof c->fileName - 1);
+        c->fileName[sizeof c->fileName - 1] = 0;
+        lower_ascii(c->fileName);
+    }
+}
+/* True if the file header says this is a cabling harness part ("#UGC:2 PART/HARNESS_PART ...").
+   Only the first line (<= 200 bytes) is read; any read problem means "not detected". */
+int file_is_harness_w(const wchar_t *wpath)
+{
+    FILE *f = _wfopen(wpath, L"rb");
+    char hdr[201];
+    size_t n, i;
+    if (!f) return 0;
+    n = fread(hdr, 1, 200, f);
+    fclose(f);
+    hdr[n] = 0;
+    for (i = 0; i < n; i++) if (hdr[i] == 10 || hdr[i] == 13) { hdr[i] = 0; break; }
+    return strncmp(hdr, "#UGC:", 5) == 0 && strstr(hdr, "HARNESS") != NULL;
 }

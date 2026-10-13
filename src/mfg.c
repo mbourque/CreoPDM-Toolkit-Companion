@@ -52,7 +52,7 @@ static void model_cb(const CompInfo *ci, void *ud)
 {
     MfgCtx *mc = (MfgCtx *)ud;
     ProAsmcompType rt = PRO_ASM_COMP_TYPE_NONE;
-    int have_role = (ProAsmcompTypeGet(ci->feat, mc->top, &rt) == PRO_TK_NO_ERROR);
+    int have_role = (ci->feat && ProAsmcompTypeGet(ci->feat, mc->top, &rt) == PRO_TK_NO_ERROR);
     Jw *w = mc->w;
     char idS[40];
 
@@ -178,6 +178,10 @@ static ProError feat_row(ProFeature *feat, ProError status, ProAppData data)
     type[0] = subtype[0] = name[0] = parS[0] = 0;
     ProFeatureTypeGet(feat, &ft);
     if (ft == PRO_FEAT_COMPONENT) return PRO_TK_NO_ERROR;   /* components are reported in models[] */
+    {
+        ProBoolean vis = PRO_B_TRUE;                          /* skip internal (invisible) features */
+        if (ProFeatureVisibilityGet(feat, &vis) == PRO_TK_NO_ERROR && vis == PRO_B_FALSE) return PRO_TK_NO_ERROR;
+    }
     if (ProFeatureTypenameGet(feat, tn) == PRO_TK_NO_ERROR) w2u(tn, type, sizeof type);
     if (!type[0]) sprintf(type, "FEATTYPE_%d", (int)ft);
     else { char *t; for (t = type; *t; ++t) *t = (*t == ' ') ? '_' : (char)toupper((unsigned char)*t); }
@@ -186,6 +190,7 @@ static ProError feat_row(ProFeature *feat, ProError status, ProAppData data)
     sub[0] = 0;
     if (ProFeatureSubtypeGet(feat, sub) == PRO_TK_NO_ERROR) w2u(sub, subtype, sizeof subtype);
     if (ProModelitemNameGet((ProModelitem *)feat, nm) == PRO_TK_NO_ERROR) w2u(nm, name, sizeof name);
+    if (is_noname_u(name)) return PRO_TK_NO_ERROR;      /* hidden unnamed feature: never emitted */
     if (!name[0]) sprintf(name, "%s (%d)", type, feat->id);
 
     if (ProFeatureStatusGet(feat, &fs) == PRO_TK_NO_ERROR) {

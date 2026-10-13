@@ -35,6 +35,11 @@ void collect_identity(Sb *out, const Ctx *c, const Query *q)
     ProMdlsubtype st;
     (void)q;
 
+    if (!c->fileName[0]) {                      /* never return ok:true with an empty identity */
+        emit_error(out, "identity unavailable: model has no usable file name");
+        return;
+    }
+
     open_ok(&w, out, c);
     jw_obj(&w, "identity");
     jw_str(&w, "file_name", c->fileName);

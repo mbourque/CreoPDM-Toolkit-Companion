@@ -200,3 +200,122 @@ so datums, CSYS and cross-sections cannot appear (they are in `/features`). In `
 - **Single-threaded / queued:** all Toolkit work runs on Creo's main thread and requests are handled strictly one at a time; concurrent callers queue (30 s per-request timeout, `CREOPDM_TOOLKIT_TIMEOUT_MS`).
 - **`timings_ms`** is appended to every `/collect` and single-domain response: `{retrieved, retrieve_ms, <domain>_ms for each domain that ran, erase_ms, total_ms}`. The same line is written to `%TEMP%\creopdm_toolkit.log`, e.g.
   `/collect base-plate.prt retrieved=1 retrieve=842ms identity=1ms features=6ms mass=3ms erase=2ms total=861ms`.
+
+### Hidden / unnamed features
+`/features`, the per-feature rows of `/relations`, and `/mfg` features skip **internal (invisible) features** (`ProFeatureVisibilityGet` = FALSE; `ProSolidFeatVisit` visits them otherwise) and
+any feature whose raw name is Creo's `no_name` placeholder (case-insensitive). The literal `no_name` is never emitted: a feature-relations row with such a name has `feature_name: null`.
+Unnamed but *visible* features still appear with the `TYPE (id)` fallback name.
+
+### `/structure` is now a full nested tree by default
+`recurse` now defaults to **1** (use `?recurse=0` for top-level only). Levels: top-level components 1, children of a sub-assembly 2, and so on; `path` is the id chain from the root.
+Only **component features** are walked (one `ProSolidFeatVisit` per assembly); no features/parameters/materials/mass of children are read and **nothing is retrieved**.
+A sub-assembly is expanded only if its model is already in memory (always true after the root assembly was retrieved/loaded, since Creo loads its components, or after parts-first + `keep=1`).
+A non-suppressed sub-assembly that is not in memory is listed by name only with `expanded:false`; the response then has `partial:true` and `unexpandedSubassemblies:N`. Suppressed sub-assemblies are never expanded.
+The existing domain name (`structure`) and URL are unchanged, so the agent needs no new parameter.
+
+### Skeleton typing in `/structure`
+A component is a skeleton when `ProMdlIsSkeleton` says so for its model (if in memory), or, for name-only components, when it matches the owner assembly's primary skeleton (`ProAsmSkeletonGet`).
+Rows then have `type:"SKELETON"`, `subtype:"SKELETON"` and `is_skeleton:true`. Other parts: `type:"PART"`, `is_skeleton:false`. If a component model is not in memory and is not the owner's
+primary skeleton, `is_skeleton` is `null` (unknown, not "false") and `type` is `PART`; in that case `type` is a best guess. Assemblies are always `is_skeleton:false`.
+
+### Identity hardening
+- `identity.file_name` is always the logical tip name (`shaft.prt`, lowercase) from the model handle; if the handle returns no name it falls back to the requested `fileName=` as given (e.g. `shaft.prt.2`).
+- If the model cannot be retrieved: `{ok:false,error:"could not retrieve <file> ..."}` (no identity at all). If the handle is unusable: `ok:false "model handle for <file> is not usable"`.
+- If there is still no name, `/identity` returns `ok:false "identity unavailable: model has no usable file name"`; it never returns `ok:true` with an empty identity.
+
+## Expected skips / stable error strings
+Collect with `fileName=`+`path=` returns `{ok:false,error:"..."}` with these prefixes (safe to treat as expected skips):
+| Error prefix | Meaning |
+|---|---|
+| `harness_not_openable_in_isolation: open the cabling assembly that contains <tip>` | The file is a cabling harness part. Creo cannot open it standalone, so no load is attempted. |
+| `<tip> is not in session; pass path= ...` | Model not in session and no `path`. |
+| `file_not_found: <path> (ProMdlFiletypeLoad=N)` | The path does not exist. |
+| `could not retrieve <tip> from path (ProMdlFiletypeLoad=N)` | Any other load failure. |
+
+Harness detection: Toolkit has no API to inspect a model without loading it (a `ProHarness` is just a loaded part), so the file's first line is read (<=200 bytes) before any load: Creo-saved harness parts start with
+`#UGC:2 PART/HARNESS_PART ...` (sheetmetal parts start `PART/SHEETMETAL`, normal parts `PART`). The check runs only when the model is NOT already in session; if the harness was opened through its cabling
+assembly it is in session and collects normally. The same check is repeated after a failed load. Verified against Creo's own `striped_cable/_striped_cable_preview_harness.prt`; if a harness from another Creo version
+is not recognised it falls through to the generic `could not retrieve ... =-1` error.
+
+### Harness tips: identity succeeds, everything else is skipped
+For a harness tip that is not in session, `identity` is answered from the file header alone (no `ProMdlFiletypeLoad`, nothing retrieved):
+```json
+GET /identity?fileName=600640041454.prt&path=C%3A%5C...%5C600640041454.prt.3
+{"ok":true,"fileName":"600640041454.prt",
+ "identity":{"file_name":"600640041454.prt","model_type":"PART","model_role":"HARNESS","subtype":"HARNESS",
+             "origin":"C:\...\600640041454.prt.3","identity_source":"file_header"}}
+```
+`file_name` is the requested tip (lowercased, as given incl. any `.N`). `identity_source:"file_header"` marks it as not read from a loaded model.
+
+`/collect` for a harness tip is `ok:true` with `"harness":true`, `"type":"PART"` and a per-domain result, so CreoPDM can save identity and skip the rest:
+```json
+GET /collect?fileName=600640041454.prt&path=...&domains=identity,parameters,features
+{"ok":true,"fileName":"600640041454.prt","type":"PART","harness":true,
+ "domains":{"identity":{"ok":true,"fileName":"...","identity":{...as above...}},
+            "parameters":{"ok":false,"error":"harness_not_openable_in_isolation: open the cabling assembly that contains 600640041454.prt"},
+            "features":{"ok":false,"error":"harness_not_openable_in_isolation: ..."}}}
+```
+With no `domains` (or `all`) the same applies to every domain a PART collect would run. Domain behavior for a harness tip not in session:
+| Endpoint / domain | Result |
+|---|---|
+| `identity` | `ok:true` (HARNESS stub above) |
+| `parameters`, `features`, `materials`, `mass`, `units`, `relations`, any other single-domain endpoint | `ok:false` `harness_not_openable_in_isolation: ...` |
+Units are not offered for harnesses: they need a loaded model. A harness already in session (opened through its cabling assembly) is collected normally with real data. Harness responses also carry `timings_ms` (retrieve ~0).
+
+### Harness members in `/structure`
+Harness components are always listed, never retrieved:
+- The component name is resolved without loading (`ProAsmcompMdlGet` -> `ProAsmcompMdlMdlnameGet` -> `ProAsmcompMdldataGet`), so a harness with no in-memory model keeps its tip name.
+- A component is marked harness when it is in the owner assembly's Toolkit harness list (`ProAssemblyHarnessesTopCollect`) or, for an in-memory model, its on-disk header says `HARNESS` (same `#UGC:` check used for `harness_not_openable_in_isolation`).
+- A **supplement pass** per assembly (including sub-assemblies) adds any harness from that list the component visit did not report. If no component feature references it, the row has `id:null`.
+Row example:
+```json
+{"id":612,"name":"600640041454.prt","featureName":null,"type":"HARNESS","subtype":"HARNESS",
+ "is_skeleton":false,"is_harness":true,"level":1,"status":"ACTIVE","suppressed":false,"path":"612","expanded":false}
+```
+Other rows have `is_harness:false`. HARNESS rows are counted in `componentCount`. `/constraints` skips a harness that has no component feature. A harness still counts in the component-sum assembly mass if its model is in memory.
+Unverified in Creo: if harness members are neither `PRO_FEAT_COMPONENT` features nor in Toolkit's harness list for their owner assembly, they will still be missing; send the raw `/structure` JSON in that case.
+
+## `bom` domain (assemblies)
+`GET /bom` or `/collect?domains=bom` (ASSEMBLY only). It is **not** in the default `/collect` set; request it explicitly. `structure` is unchanged and separate.
+- Rolled up per assembly level by **logical tip name** (`shaft.prt`, never `shaft.prt.2`). `quantity` = non-suppressed occurrences under ONE instance of the parent (children are not multiplied by the parent's quantity). Suppressed components are excluded (`suppressedExcluded` counts them).
+- Each unique sub-assembly is expanded once if its model is already in session (same keep=1 / parts-first pattern); **nothing is retrieved**. Depth limit 6.
+- A sub-assembly that cannot be expanded is a leaf with `"expanded":false` and `"leaf_reason":"not_in_memory"` (or `"max_depth"`); the response then has `partial:true`, `unexpandedNotInMemory` / `unexpandedMaxDepth`.
+- Node: `{filename, quantity, dependency_type: ASSEMBLY_ROOT|ASSEMBLY_MEMBER, type: PART|ASSEMBLY|SKELETON|HARNESS, children[], expanded?, leaf_reason?}`. Harness members are listed with `type:"HARNESS"` and a quantity, never loaded. Skeletons are listed with `type:"SKELETON"` so CreoPDM can filter them if its BOM should omit them.
+- `bom` is a single-element array holding the `ASSEMBLY_ROOT` wrapper (matches `CreoMetadataRequest.bom` as a list of nodes).
+
+Illustrative sample (small nested assembly `main.asm`: 1 sub-assembly used twice, 4 screws, 1 harness; the sub-assembly's own children listed once):
+```json
+{"ok":true,"fileName":"main.asm","partial":false,"unexpandedNotInMemory":0,"unexpandedMaxDepth":0,"suppressedExcluded":0,"maxDepth":6,
+ "bom":[{"filename":"main.asm","quantity":1,"dependency_type":"ASSEMBLY_ROOT","type":"ASSEMBLY","expanded":true,"children":[
+   {"filename":"base-plate.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]},
+   {"filename":"bracket.asm","quantity":2,"dependency_type":"ASSEMBLY_MEMBER","type":"ASSEMBLY","expanded":true,"children":[
+      {"filename":"arm.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]},
+      {"filename":"bushing.prt","quantity":2,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]}]},
+   {"filename":"iso4762-m10x30.prt","quantity":4,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]},
+   {"filename":"600640041454.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"HARNESS","children":[]}]}]}
+```
+(Sample is hand-written to show the shape; it is not output captured from Creo.)
+
+### `/features`: groups nest their members
+Group membership comes from `ProFeatureGroupGet` (the group head that contains a feature). Rows keep the existing shape `{id,name,type,subtype,level,status,suppressed}`; `level` is now filled:
+top-level features are `level:1`, a `GROUP_HEAD` stays at its own level and is followed by its members at `level+1` (nested groups go deeper). Previously `level` was `null` for every row.
+A member whose group head is not in the list (e.g. hidden/internal) is shown at level 1, so no feature is lost. Applies to ordinary groups and cabling groups alike.
+```json
+[{"id":40,"name":"DEFAULT_CSYS","type":"COORDINATE_SYSTEM","subtype":"","level":1,"status":"ACTIVE","suppressed":false},
+ {"id":210,"name":"BOLTS","type":"GROUP_HEAD","subtype":"","level":1,"status":"ACTIVE","suppressed":false},
+ {"id":214,"name":"BOLT_1","type":"COMPONENT","subtype":"","level":2,"status":"ACTIVE","suppressed":false},
+ {"id":216,"name":"BOLT_2","type":"COMPONENT","subtype":"","level":2,"status":"ACTIVE","suppressed":false},
+ {"id":230,"name":"HARNESS-ACTUATORS","type":"GROUP_HEAD","subtype":"","level":1,"status":"ACTIVE","suppressed":false},
+ {"id":234,"name":"SPOOL_1","type":"SPOOL","subtype":"","level":2,"status":"ACTIVE","suppressed":false}]
+```
+(Illustrative shape; not captured output.)
+
+### Harness discovery (`/harness-probe`) and the wider harness list
+Harnesses are listed in `/structure` (and `/bom`) from: (1) component features whose model is a harness (in the owner assembly's `ProAssemblyHarnessesTopCollect` list, or on-disk header `HARNESS`), (2) the owner's harness list
+for any harness no component feature references (`id:null`), and (3) with `recurse` on, a root-level pass over `ProAssemblyHarnessesCollect` (the assembly **and its sub-assemblies**) for any harness not yet reported
+(listed at level 1, no owner path). Nothing is loaded.
+
+`GET /harness-probe` (assembly only, diagnostic, not part of the default `/collect`; also `domains=harness_probe`) dumps what Toolkit knows, to find out how a given assembly represents its harness:
+`ProAssemblyHarnessesTopCollect` / `ProAssemblyHarnessesCollect` return codes and model names, spools, connector count, every `GROUP_HEAD` with its members (feature id/type/name and, for component members, the model name and
+whether it is in memory), and all cabling-type features (cable, cable segment, sub-harness, ribbon cable). If a harness tip is not in `harnessesTop`/`harnessesAll` and not a component member of a group, Toolkit does not expose it as a
+model for that assembly, and `/structure`/`/bom` cannot list it.

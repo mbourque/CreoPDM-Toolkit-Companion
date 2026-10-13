@@ -5,6 +5,8 @@
 #include <ProFeatType.h>
 #include <ProModelitem.h>
 #include <ProRelSet.h>
+#include <ProUdf.h>
+#include <ProGroup.h>
 #include <ProArray.h>
 
 static ProError nc_filter(ProFeature *feat, ProAppData data)
@@ -12,7 +14,12 @@ static ProError nc_filter(ProFeature *feat, ProAppData data)
     ProFeattype ft;
     (void)data;
     if (ProFeatureTypeGet(feat, &ft) != PRO_TK_NO_ERROR) return PRO_TK_CONTINUE;
-    return ft == PRO_FEAT_COMPONENT ? PRO_TK_CONTINUE : PRO_TK_NO_ERROR;   /* exclude components */
+    if (ft == PRO_FEAT_COMPONENT) return PRO_TK_CONTINUE;           /* components belong to /structure */
+    {
+        ProBoolean vis = PRO_B_TRUE;                                  /* internal (invisible) features are skipped */
+        if (ProFeatureVisibilityGet(feat, &vis) == PRO_TK_NO_ERROR && vis == PRO_B_FALSE) return PRO_TK_CONTINUE;
+    }
+    return PRO_TK_NO_ERROR;
 }
 
 static const char *status_str(ProFeature *feat, int *suppressed)
@@ -32,63 +39,133 @@ static const char *status_str(ProFeature *feat, int *suppressed)
     }
 }
 
+/* ---- feature rows, collected first so group members can be nested under their group head ---- */
+typedef struct {
+    int         id;
+    int         parent;          /* id of the containing group head, 0 = none */
+    int         is_head;
+    char        name[160], type[96], subtype[96];
+    const char *status;
+    int         suppressed;
+    int         emitted;
+} FRow;
+
+typedef struct { FRow *rows; int n, cap; ProSolid owner; } FCtx;
+
 static ProError feat_row(ProFeature *feat, ProError status, ProAppData data)
 {
-    Jw *w = (Jw *)data;
+    FCtx *fc = (FCtx *)data;
+    FRow *r;
     ProName tn, nm;
     ProLine sub;
     ProFeattype ft = 0;
-    char type[96], subtype[96], name[160];
-    int supp;
-    const char *st;
+    ProGroup grp;
     (void)status;
 
-    type[0] = subtype[0] = name[0] = 0;
+    if (fc->n >= fc->cap) {
+        int ncap = fc->cap ? fc->cap * 2 : 256;
+        FRow *nr = (FRow *)realloc(fc->rows, ncap * sizeof(FRow));
+        if (!nr) return PRO_TK_NO_ERROR;
+        fc->rows = nr;
+        fc->cap = ncap;
+    }
+    r = &fc->rows[fc->n];
+    memset(r, 0, sizeof *r);
+
     ProFeatureTypeGet(feat, &ft);
-    if (ProFeatureTypenameGet(feat, tn) == PRO_TK_NO_ERROR) w2u(tn, type, sizeof type);
-    if (!type[0]) sprintf(type, "FEATTYPE_%d", (int)ft);
+    if (ProFeatureTypenameGet(feat, tn) == PRO_TK_NO_ERROR) w2u(tn, r->type, sizeof r->type);
+    if (!r->type[0]) sprintf(r->type, "FEATTYPE_%d", (int)ft);
     else {                                   /* "Datum Plane" -> "DATUM_PLANE" */
         char *t;
-        for (t = type; *t; ++t) *t = (*t == ' ') ? '_' : (char)toupper((unsigned char)*t);
+        for (t = r->type; *t; ++t) *t = (*t == ' ') ? '_' : (char)toupper((unsigned char)*t);
     }
     sub[0] = 0;
-    if (ProFeatureSubtypeGet(feat, sub) == PRO_TK_NO_ERROR) w2u(sub, subtype, sizeof subtype);
-    if (ProModelitemNameGet((ProModelitem *)feat, nm) == PRO_TK_NO_ERROR) w2u(nm, name, sizeof name);
-    if (!name[0]) sprintf(name, "%s (%d)", type, feat->id);   /* same fallback as Creo.JS rows */
-    st = status_str(feat, &supp);
+    if (ProFeatureSubtypeGet(feat, sub) == PRO_TK_NO_ERROR) w2u(sub, r->subtype, sizeof r->subtype);
+    if (ProModelitemNameGet((ProModelitem *)feat, nm) == PRO_TK_NO_ERROR) w2u(nm, r->name, sizeof r->name);
+    if (is_noname_u(r->name)) return PRO_TK_NO_ERROR;      /* Creo placeholder for hidden unnamed features: never emitted */
+    if (!r->name[0]) sprintf(r->name, "%s (%d)", r->type, feat->id);   /* same fallback as Creo.JS rows */
+    r->status = status_str(feat, &r->suppressed);
+    r->id = feat->id;
+    r->is_head = (ft == PRO_FEAT_GROUP_HEAD);
 
-    jw_obj(w, NULL);
-    jw_int(w, "id", feat->id);
-    jw_str(w, "name", name);
-    jw_str(w, "type", type);
-    jw_str(w, "subtype", subtype);
-    jw_null(w, "level");
-    jw_str(w, "status", st);
-    jw_bool(w, "suppressed", supp);
-    jw_end_obj(w);
+    /* containing group (a group head id), if any; a head can itself sit inside a parent group */
+    if (ProFeatureGroupGet(feat, &grp) == PRO_TK_NO_ERROR && grp.id != feat->id) r->parent = grp.id;
+    fc->n++;
     return PRO_TK_NO_ERROR;
+}
+
+static void emit_frow(Jw *w, FRow *r, int level)
+{
+    jw_obj(w, NULL);
+    jw_int(w, "id", r->id);
+    jw_str(w, "name", r->name);
+    jw_str(w, "type", r->type);
+    jw_str(w, "subtype", r->subtype);
+    jw_int(w, "level", level);
+    jw_str(w, "status", r->status);
+    jw_bool(w, "suppressed", r->suppressed);
+    jw_end_obj(w);
+    r->emitted = 1;
+}
+
+/* emit the members of group head `head_id` (in feature order), recursing into nested groups */
+static void emit_members(Jw *w, FRow *rows, int n, int head_id, int level, int depth)
+{
+    int i;
+    if (depth > 16) return;
+    for (i = 0; i < n; i++) {
+        if (rows[i].emitted || rows[i].parent != head_id) continue;
+        emit_frow(w, &rows[i], level);
+        if (rows[i].is_head) emit_members(w, rows, n, rows[i].id, level + 1, depth + 1);
+    }
+}
+
+static int is_listed_head(const FRow *rows, int n, int id)
+{
+    int i;
+    for (i = 0; i < n; i++) if (rows[i].id == id && rows[i].is_head) return 1;
+    return 0;
 }
 
 void collect_features(Sb *out, const Ctx *c, const Query *q)
 {
     Sb body = { 0 };
     Jw bw, w;
+    FCtx fc;
     ProError rc;
+    int i;
 
     if (c->type == PRO_MDL_DRAWING) { collect_drawing(out, c, q); return; }
     if (c->type != PRO_MDL_PART && c->type != PRO_MDL_ASSEMBLY) {
         emit_errorf(out, "features apply to PART/ASSEMBLY/DRAWING; active model is %s%s", c->typeStr, c->type == PRO_MDL_MFG ? " (use /mfg)" : "");
         return;
     }
-    jw_init(&bw, &body);
-    jw_arr(&bw, NULL);
-    rc = ProSolidFeatVisit((ProSolid)c->mdl, feat_row, nc_filter, (ProAppData)&bw);
-    jw_end_arr(&bw);
+    memset(&fc, 0, sizeof fc);
+    fc.owner = (ProSolid)c->mdl;
+    rc = ProSolidFeatVisit((ProSolid)c->mdl, feat_row, nc_filter, (ProAppData)&fc);
     if (rc != PRO_TK_NO_ERROR && rc != PRO_TK_E_NOT_FOUND) {
         emit_errorf(out, "ProSolidFeatVisit failed (%d)", (int)rc);
-        sb_free(&body);
+        free(fc.rows);
         return;
     }
+
+    /* Tree order: each top-level feature (not inside a listed group) in feature order; a GROUP_HEAD is
+       followed by its members at level+1 (and nested groups deeper). A member whose group head is not in
+       the list (e.g. hidden) is treated as top level. */
+    jw_init(&bw, &body);
+    jw_arr(&bw, NULL);
+    for (i = 0; i < fc.n; i++) {
+        FRow *r = &fc.rows[i];
+        if (r->emitted) continue;
+        if (r->parent && is_listed_head(fc.rows, fc.n, r->parent)) continue;   /* emitted under its head */
+        emit_frow(&bw, r, 1);
+        if (r->is_head) emit_members(&bw, fc.rows, fc.n, r->id, 2, 0);
+    }
+    for (i = 0; i < fc.n; i++)                                                 /* safety: nothing may be lost */
+        if (!fc.rows[i].emitted) emit_frow(&bw, &fc.rows[i], 1);
+    jw_end_arr(&bw);
+    free(fc.rows);
+
     jw_init(&w, out);
     jw_obj(&w, NULL);
     jw_bool(&w, "ok", 1);
@@ -133,8 +210,12 @@ static ProError rel_feat_row(ProFeature *feat, ProError status, ProAppData data)
     if (relset_lines(&rs, &lines) > 0) {
         jw_obj(rc->w, NULL);
         jw_int(rc->w, "feature_id", feat->id);
-        if (ProModelitemNameGet((ProModelitem *)feat, nm) == PRO_TK_NO_ERROR) jw_wstr(rc->w, "feature_name", nm);
-        else jw_null(rc->w, "feature_name");
+        {
+            char fnU[160];
+            fnU[0] = 0;
+            if (ProModelitemNameGet((ProModelitem *)feat, nm) == PRO_TK_NO_ERROR) w2u(nm, fnU, sizeof fnU);
+            if (fnU[0] && !is_noname_u(fnU)) jw_str(rc->w, "feature_name", fnU); else jw_null(rc->w, "feature_name");
+        }
         jw_raw(rc->w, "relations", lines.p);
         jw_end_obj(rc->w);
     }
