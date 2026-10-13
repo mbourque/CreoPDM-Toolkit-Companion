@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "fileName": "tdd-demo.asm",
+  "componentCount": 14,
+  "skippedNoModel": 0,
+  "components": [
+    {"id": 40, "name": "tdd-demo_skel.prt", "featureName": null, "type": "SKELETON", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 41, "name": "base-plate.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 47, "name": "support.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 49, "name": "support.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 669, "name": "bearing.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 670, "name": "bearing.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 46, "name": "shaft.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 779, "name": "retaining-ring.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 782, "name": "retaining-ring.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 50, "name": "cover.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 450, "name": "iso4762-m10x30-10_9.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 453, "name": "iso4762-m10x30-10_9.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 456, "name": "iso4762-m10x30-10_9.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false},
+    {"id": 459, "name": "iso4762-m10x30-10_9.prt", "featureName": null, "type": "PART", "level": 1, "status": "ACTIVE", "suppressed": false}
+  ]
+}

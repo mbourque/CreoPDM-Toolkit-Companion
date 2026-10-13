@@ -1,0 +1,7 @@
+NAME        CreoPDMStructure
+EXEC_FILE   C:\dev\Toolkit-PDM\bin\creopdm_structure.dll
+TEXT_DIR    C:\dev\Toolkit-PDM\text
+STARTUP     dll
+ALLOW_STOP  TRUE
+REVISION    18
+END

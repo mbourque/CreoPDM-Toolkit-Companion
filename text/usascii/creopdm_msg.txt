@@ -1,0 +1,20 @@
+CPDM_LABEL
+CreoPDM Structure Export
+#
+#
+CPDM_HELP
+Export top-level assembly components to JSON
+#
+#
+CPDM_DESC
+Writes the active assembly components to CREOPDM_STRUCTURE_OUT as JSON
+#
+#
+CPDM_HTTP_UP
+CreoPDM Structure: HTTP listening on 127.0.0.1.
+#
+#
+CPDM_HTTP_FAIL
+CreoPDM Structure: HTTP not started (see creopdm_structure.log in TEMP). Ribbon command still works.
+#
+#
