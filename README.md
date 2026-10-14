@@ -326,3 +326,9 @@ meant to load in that release and later (not the reverse). Source differences be
 (Creo 8-10 SDKs; deprecated but still present in newer Creo); the `TANGENT_ALIGN` constraint label is matched by value (36). A Creo 10 SDK build therefore uses `ProDwgtable*` everywhere, including when run in Creo 13.
 Unlock once with the build's `CREO_HOME`; if a newer Creo reports the app "was not unlocked before distribution", run that release's `protk_unlock.bat` on the same DLL (safe to repeat).
 Not yet tested at run time in Creo 10 or 13. Files last saved in a newer release than the Creo that opens them cannot be retrieved (`ProMdlFiletypeLoad=-1`).
+
+### `/drawing` features are in outline order (sheet, then its children)
+`features` is emitted as: `SHEET 1`, all views/notes/dimensions/tables whose `sheet` is 1, then `SHEET 2` and its children, and so on to the last sheet. Sheets are `level:1` (and now carry `sheet:N` / `sheet_id`);
+their views, notes, dimensions and tables are `level:2` with the same `sheet` / `sheet_id` and a `parent_id` (`sheet:N`, and for dimensions the owning view in `view_id`). Within a sheet the order is views, notes, dimensions, tables.
+Dimensions are now `level:2` (previously 3 when they belonged to a view) so an indent-by-level outline does not hang them under the last note/table; the view link is `view_id` / `parent_id`.
+Rows with no sheet (e.g. a drawing-owned dimension not tied to a view) are listed last at `level:1` with `sheet:null`. Ids are unchanged (`sheet:N`, `view:N`, `note:N`, `dim:<owner>:N`, `table:N`).

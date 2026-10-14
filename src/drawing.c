@@ -43,6 +43,8 @@ static ProError cp_rows_cols(CpdmTable *t, int *r, int *c)
 
 typedef struct {
     Jw        *w;
+    Jw        *sws;                 /* per-sheet row writers (index 0 = no sheet) */
+    Sb        *sbs;
     ProDrawing drw;
     int        nsheets;
     int        cursheet;
@@ -50,6 +52,7 @@ typedef struct {
     ProMdl     solids[MAX_SOLIDS];
     int        nsolids;
 } DCtx;
+static Jw *row_jw(DCtx *d, int sheet) { return &d->sws[(sheet >= 1 && sheet <= d->nsheets) ? sheet : 0]; }static int row_level(int sheet, int lv) { return sheet > 0 ? lv : 1; }   /* sheetless rows are top level *//* append the rows bucketed for one sheet (a "[ ... ]" array text) to the outline array, keeping order */static void splice_bucket(Jw *out_w, DCtx *d, int idx){    Sb *b = &d->sbs[idx];    Jw *bw = &d->sws[idx];    if (!b->p) return;    jw_end_arr(bw);                         /* close the bucket array */    if (b->len > 2) {                       /* non-empty: strip the brackets and add the row list */        b->p[b->len - 1] = 0;        jw_raw(out_w, NULL, b->p + 1);    }}
 
 static void add_solid(DCtx *d, ProMdl m)
 {
@@ -179,6 +182,7 @@ static int collect_notes(DCtx *d, int *count)
             if (ProModelitemNameGet((ProModelitem *)&notes[i], mn) == PRO_TK_NO_ERROR) w2u(mn, nm, sizeof nm);
             if (!nm[0]) sprintf(nm, "Note %d", nid);
 
+            d->w = row_jw(d, s);
             jw_obj(d->w, NULL);
             jw_str(d->w, "id", idS);
             jw_int(d->w, "creo_id", nid);
@@ -299,6 +303,7 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
     else if (sheet > 0) sprintf(par, "sheet:%d", sheet);
     else par[0] = 0;
 
+    d->w = row_jw(d, sheet);
     jw_obj(d->w, NULL);
     jw_str(d->w, "id", idS);
     jw_int(d->w, "creo_id", dim->id);
@@ -306,7 +311,7 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
     jw_str(d->w, "type", "DIMENSION");
     jw_str(d->w, "subtype", subtype);
     if (trc == PRO_TK_NO_ERROR) jw_int(d->w, "type_id", (int)dt); else jw_null(d->w, "type_id");
-    jw_int(d->w, "level", has_view ? 3 : 2);
+    jw_int(d->w, "level", row_level(sheet, 2));   /* children of the sheet; view link is in parent_id / view_id */
     jw_str(d->w, "status", "DISPLAYED");
     jw_bool(d->w, "suppressed", 0);
     sheet_ref(d->w, sheet);
@@ -404,13 +409,14 @@ static int collect_tables(DCtx *d, int *count, int with_cells)
         sprintf(idS, "table:%d", t->id);
         if (sheet > 0) sprintf(par, "sheet:%d", sheet); else par[0] = 0;
 
+        d->w = row_jw(d, sheet);
         jw_obj(d->w, NULL);
         jw_str(d->w, "id", idS);
         jw_int(d->w, "creo_id", t->id);
         jw_str(d->w, "name", nm);
         jw_str(d->w, "type", "TABLE");
         jw_str(d->w, "subtype", "");
-        jw_int(d->w, "level", 2);
+        jw_int(d->w, "level", row_level(sheet, 2));
         jw_str(d->w, "status", "DISPLAYED");
         jw_bool(d->w, "suppressed", 0);
         sheet_ref(d->w, sheet);
@@ -485,24 +491,12 @@ void collect_drawing(Sb *out, const Ctx *c, const Query *q)
     jw_arr(&fw, NULL);
     d.w = &fw;
 
-    /* sheets */
-    for (i = 1; i <= nsheets; i++) {
-        ProName sn;
-        char sid[24];
-        jw_obj(&fw, NULL);
-        sprintf(sid, "sheet:%d", i);
-        jw_str(&fw, "id", sid);
-        jw_int(&fw, "creo_id", i);
-        sn[0] = 0;
-        if (ProDrawingSheetNameGet(drw, i, sn) == PRO_TK_NO_ERROR && sn[0]) jw_wstr(&fw, "name", sn);
-        else { char b[24]; sprintf(b, "Sheet %d", i); jw_str(&fw, "name", b); }
-        jw_str(&fw, "type", "SHEET");
-        jw_str(&fw, "subtype", "");
-        jw_int(&fw, "level", 1);
-        jw_str(&fw, "status", i == cur ? "CURRENT" : "ACTIVE");
-        jw_bool(&fw, "suppressed", 0);
-        jw_end_obj(&fw);
-    }
+    /* one row bucket per sheet (index 0 = rows with no sheet), spliced into the outline in sheet order below */
+    d.sbs = (Sb *)calloc(nsheets + 1, sizeof(Sb));
+    d.sws = (Jw *)calloc(nsheets + 1, sizeof(Jw));
+    if (!d.sbs || !d.sws) { emit_error(out, "out of memory"); free(d.sbs); free(d.sws); sb_free(&feats); return; }
+    for (i = 0; i <= nsheets; i++) { jw_init(&d.sws[i], &d.sbs[i]); jw_arr(&d.sws[i], NULL); }
+
 
     /* views */
     if (ProDrawingViewsCollect(drw, &views) == PRO_TK_NO_ERROR && views) {
@@ -525,20 +519,21 @@ void collect_drawing(Sb *out, const Ctx *c, const Query *q)
                 sub[sizeof sub - 1] = 0;
                 lower_ascii(sub);
             }
-            jw_obj(&fw, NULL);
+            d.w = row_jw(&d, sheet);
+            jw_obj(d.w, NULL);
             sprintf(vidS, "view:%d", vid);
-            jw_str(&fw, "id", vidS);
-            jw_int(&fw, "creo_id", vid);
-            jw_wstr(&fw, "name", vn);
-            jw_str(&fw, "type", "VIEW");
-            jw_str(&fw, "subtype", sub);          /* model displayed (name without extension) */
-            jw_int(&fw, "level", 2);
-            jw_str(&fw, "status", "ACTIVE");
-            jw_bool(&fw, "suppressed", 0);
-            sheet_ref(&fw, sheet);
-            if (sheet > 0) { char p[24]; sprintf(p, "sheet:%d", sheet); jw_str(&fw, "parent_id", p); }
-            else jw_null(&fw, "parent_id");
-            jw_end_obj(&fw);
+            jw_str(d.w, "id", vidS);
+            jw_int(d.w, "creo_id", vid);
+            jw_wstr(d.w, "name", vn);
+            jw_str(d.w, "type", "VIEW");
+            jw_str(d.w, "subtype", sub);          /* model displayed (name without extension) */
+            jw_int(d.w, "level", row_level(sheet, 2));
+            jw_str(d.w, "status", "ACTIVE");
+            jw_bool(d.w, "suppressed", 0);
+            sheet_ref(d.w, sheet);
+            if (sheet > 0) { char p[24]; sprintf(p, "sheet:%d", sheet); jw_str(d.w, "parent_id", p); }
+            else jw_null(d.w, "parent_id");
+            jw_end_obj(d.w);
         }
         ProArrayFree((ProArray *)&views);
     }
@@ -546,7 +541,32 @@ void collect_drawing(Sb *out, const Ctx *c, const Query *q)
     bad_notes  = collect_notes(&d, &ncount);
     bad_dims   = collect_dims(&d, &dcount);
     bad_tables = collect_tables(&d, &tcount, with_cells);
+    /* Emit in outline order: SHEET n, then everything that belongs to sheet n, for n = 1..N.
+       Children were bucketed by sheet while collecting. Rows without a sheet go last, at level 1. */
+    for (i = 1; i <= nsheets; i++) {
+        ProName sn;
+        char sid[24];
+        jw_obj(&fw, NULL);
+        sprintf(sid, "sheet:%d", i);
+        jw_str(&fw, "id", sid);
+        jw_int(&fw, "creo_id", i);
+        sn[0] = 0;
+        if (ProDrawingSheetNameGet(drw, i, sn) == PRO_TK_NO_ERROR && sn[0]) jw_wstr(&fw, "name", sn);
+        else { char b[24]; sprintf(b, "Sheet %d", i); jw_str(&fw, "name", b); }
+        jw_str(&fw, "type", "SHEET");
+        jw_str(&fw, "subtype", "");
+        jw_int(&fw, "level", 1);
+        jw_str(&fw, "status", i == cur ? "CURRENT" : "ACTIVE");
+        jw_bool(&fw, "suppressed", 0);
+        sheet_ref(&fw, i);
+        jw_end_obj(&fw);
+        splice_bucket(&fw, &d, i);
+    }
+    splice_bucket(&fw, &d, 0);
     jw_end_arr(&fw);
+    for (i = 0; i <= nsheets; i++) sb_free(&d.sbs[i]);
+    free(d.sbs);
+    free(d.sws);
 
     jw_init(&w, out);
     jw_obj(&w, NULL);
