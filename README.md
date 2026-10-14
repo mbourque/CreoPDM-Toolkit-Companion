@@ -1,334 +1,286 @@
-# CreoPDM Toolkit service (Pro/TOOLKIT aux app)
+# CreoPDM Toolkit Companion
 
-One loaded Toolkit app that serves CreoPDM Collect metadata over a localhost HTTP API, one endpoint per domain.
-Grew out of the "Structure Export" pilot; the DLL is still `creopdm_structure.dll` so existing registration works.
-Not wired into CreoPDM / Creo.JS yet.
+A Creo Parametric auxiliary application (Pro/TOOLKIT, C) that reads metadata out of Creo and serves it over a small **localhost HTTP API**.
 
-> **Status (v0.3.0):** builds and unlocks cleanly against Creo 13.4.1.0 headers. `/structure` was verified in Creo
-> earlier (pilot, 14 components). **Everything else, and the new HTTP routing, is untested in Creo.** Treat the first
-> run as a test pass (matrix below).
+> **This is a companion to, and a requirement for, [CreoPDM](https://github.com/mbourque/CreoPDM).** CreoPDM's agent calls this service on `127.0.0.1` during **Collect** to read identity, parameters, features, structure, BOM, mass, drawings and manufacturing data from Creo models. Install it into every Creo session that CreoPDM Collect will use.
 
-## Layout
-| File | Role |
+- **Windows x64**, Creo Parametric **10 and later**. Built against the Creo 10 SDK; tested by the author in Creo 10 through 13.
+- The app lives **inside a running Creo** (a Toolkit app cannot run standalone). It listens on `127.0.0.1` only and never opens windows or tabs to collect.
+- A prebuilt, unlocked `bin\creopdm_structure.dll` is included, so you can use it without building. (The DLL keeps its original name, `creopdm_structure.dll`, for compatibility with existing installs.)
+
+## Contents
+[Install](#install-into-creo) · [Check it works](#check-that-it-works) · [Troubleshooting](#troubleshooting) · [Build from source](#build-from-source-optional) · [HTTP API](#http-api) · [Collect contract](#collect-contract) · [Domains in detail](#domains-in-detail) · [Error strings](#expected-skips--error-strings) · [Developer notes](#developer-notes)
+
+---
+
+## Install into Creo
+**You need three things**, kept together in one permanent folder (all three are in this repo):
+
+| Item | What it is |
 |---|---|
-| `src/main.c` | `user_initialize`/`user_terminate`, ribbon command (`creopdm_structure_export` -> `/structure` to a file) |
-| `src/http_server.c` | 127.0.0.1 server, worker thread, main-thread marshalling |
-| `src/router.c` | path -> collector table, `/health`, `/collect` |
-| `src/common.c/.h` | string builder, JSON writer, logging, model context |
-| `src/structure.c` | component walker + `/structure` |
-| `src/model.c` | identity, units, parameters, mass, materials |
-| `src/features.c` | features (non-component), relations |
-| `src/assembly.c` | constraints, simplified reps |
-| `src/drawing.c` | drawing sheets + views |
+| `bin\creopdm_structure.dll` | The app (prebuilt and unlocked). |
+| `protk.dat` | The registration file Creo reads. It points at the DLL and the text folder. |
+| `text\usascii\creopdm_msg.txt` | Message strings (ribbon label, the startup message line). |
 
-Add a domain: write `collect_x(Sb*, const Ctx*, const Query*)`, add one row to `DOMAINS[]` in `router.c`. It then gets
-its own `GET /x` and is available in `/collect?domains=x`.
+**1. Download** this repo from <https://github.com/mbourque/CreoPDM-Toolkit-Companion> (Code > Download ZIP, or `git clone https://github.com/mbourque/CreoPDM-Toolkit-Companion.git`) and put the three items somewhere permanent: outside Creo's own install folder, and not on a drive that can be offline. For example `C:\CreoPDM\Toolkit\`:
+```
+C:\CreoPDM\Toolkit\
+    protk.dat
+    bin\creopdm_structure.dll
+    text\usascii\creopdm_msg.txt
+```
+(Running straight from the cloned repo folder also works; just use that folder's paths below.)
 
-## HTTP
-Binds **127.0.0.1 only**. Port: env `CREOPDM_TOOLKIT_PORT`, else (old name) `CREOPDM_STRUCTURE_PORT`, default **8767**.
-Per-request timeout: `CREOPDM_TOOLKIT_TIMEOUT_MS` (default 30000). Set env vars before starting Creo.
-Errors are HTTP 200 + `{"ok": false, "error": "..."}` (404 unknown path, 405 bad method). `GET` and `POST` are equivalent.
+**2. Edit `protk.dat`** so the two paths match where you put the files. The copy in this repo has the developer's paths (`C:\dev\Toolkit-PDM\...`), so it must be changed:
+```
+NAME        CreoPDMStructure
+EXEC_FILE   C:\CreoPDM\Toolkit\bin\creopdm_structure.dll
+TEXT_DIR    C:\CreoPDM\Toolkit\text
+STARTUP     dll
+ALLOW_STOP  TRUE
+REVISION    18
+END
+```
+Leave `REVISION 18` as is unless Creo reports a revision problem when loading.
 
-| Endpoint | PART | ASM | MFG | DRW | Response |
-|---|:-:|:-:|:-:|:-:|---|
-| `/health` | x | x | x | x | `{ok, service:"creopdm-toolkit", version, model:{fileName,type}\|null}` (`busy:true` if Creo is busy) |
-| `/identity` | x | x | x | x | `{ok,fileName,identity:{file_name,common_name,full_name,generic_name,instance_name,origin,model_type,model_role,is_modified,version_stamp}}` |
-| `/units` | x | x | x | x | `{ok,fileName,units:{system_name,length,mass,time,temperature,angle}}` |
-| `/parameters` | x | x | x | x | `{ok,fileName,parameters:[{name,value,data_type,units,description,is_designated}]}` |
-| `/mass` | x | x | | | `{ok,fileName,mass:{mass,volume,surface_area,density,gravity_center[3],principal_moments[3]|null,cg_inertia_tensor[3][3]},method}`; assemblies try 3 Toolkit calls, then a component sum (see below) |
-| `/materials` | x | | | | `{ok,fileName,materials:{current,names[]}}` |
-| `/features` | x | x | | x | `{ok,fileName,features:[{id,name,type,subtype,level,status,suppressed}]}`; components excluded; for DRW same rows as `/drawing` |
-| `/relations` | x | x | | | `{ok,fileName,normal[],post_regeneration[],features:[{feature_id,feature_name,relations[]}],errors[]}` |
-| `/structure` | | x | | | `{ok,fileName,componentCount,skippedNoModel,recurse,components:[...]}`; `?recurse=0\|1` |
-| `/constraints` | | x | | | `{ok,fileName,recurse,components:[{id,name,path,level,suppressed,constraints[]}],errors[]}`; `?recurse=0\|1` |
-| `/simp-reps` | | x | | | `{ok,fileName,active:{id,name,is_master},representations:[{id,name,is_active}],errors[]}` |
-| `/drawing` | | | | x | `{ok,fileName,partial,partial_missing[],sheetCount,viewCount,noteCount,dimensionCount,tableCount,features:[SHEET/VIEW/NOTE/DIMENSION/TABLE rows]}`; string ids `sheet:N` `view:N` `note:N` `dim:<owner>:N` `table:N`, numeric id in `creo_id`; `?cells=1` adds table cell text |
-| `/collect?domains=a,b` | x | x | x | x | `{ok,fileName,type,domains:{a:{...},b:{...}}}` |
+**3. Add one line to `config.pro`**, using the full path to your `protk.dat`:
+```
+protkdat C:\CreoPDM\Toolkit\protk.dat
+```
+Put it in a `config.pro` that Creo reads at startup: the one in Creo's startup (working) folder for a single user, or the system `config.pro` in `<Creo install>\Common Files\text\` for everyone on the machine. If you already register other Toolkit apps, add this as another `protkdat` line (Creo accepts several).
 
-`/collect` with no `domains` (or `all`) runs every domain that applies to the active model type and omits the rest.
-With an explicit list, a domain that does not apply returns its own `{ok:false,error}` while the others still run.
-`simp-reps` and `simp_reps` are interchangeable.
+**4. Restart Creo.** `config.pro` is only read at startup.
 
-### Mapping to CreoMetadataRequest (pdm-lite)
-Take the inner key: `/parameters`.parameters -> `parameters`, `/mass`.mass -> `mass`, `/units`.units -> `units`,
-`/materials`.materials -> `materials`, `/identity`.identity -> `identity`, `/features`.features -> `features`,
-`/structure`.components -> `structure`. `relations`, `constraints`, `simp_reps` are the response itself (the
-envelope dicts). Parameter `value` is always a string (`"true"/"false"` for BOOLEAN); `units` only for DOUBLE.
+If you copy a newer `creopdm_structure.dll` over an old one later, close Creo first (it locks the DLL).
 
-### Honest limits
-- **Mass** returns `ok:false` (plus `volume` if known) when no density/material exists; it never returns zeros.
-  It is computed on the active model only and loads nothing.
-- **`/structure?recurse=1`** walks sub-assemblies that are **already in session**; others report `expanded:false`.
-  Nothing is retrieved. Same for `/constraints?recurse=1`.
-- **`/constraints`** field names follow the Creo.JS row keys (`type, offset, offset_units, assembly_reference,
-  component_reference, *_datum_side`), but the reference object (`item_type,id,name,path`) and the component wrapper are
-  Toolkit-native and **provisional**. `offset_units` is null (not derived). Datum sides are raw enum ints.
-- **`/identity`**: `generic_name`, `instance_name`, `model_role` are empty strings (not derived); `version_stamp` null.
-- **`/features`** `level` is null (flat list); `type` is the Toolkit feature type name, which may differ from Creo.JS labels.
-- **`/simp-reps`**: id/name/is_active only. Non-positive Toolkit ids (e.g. DEFAULT REP) are reported as `null`; the active rep is matched by name.
-- **`/drawing`**: notes, dimensions and tables are read; `partial` turns true only if one of those enumerations errors (then named in `partial_missing`). Dimension `units` are derived (owner model length unit, sheet unit for drawing-created dims, `deg` for angles) because Toolkit exposes no per-dimension unit. Shown dims come from models already in session (view models plus in-session components of assembly views). Notes inside table cells and model annotations (3D notes, GD&T) are not listed.
-- Dimensions, family table, BOM are not provided.
+### Check that it works
+- On startup the message line shows *"CreoPDM Structure: HTTP listening on 127.0.0.1."* The app also appears in Creo's Auxiliary Applications list.
+- From PowerShell, with Creo running:
+  ```powershell
+  Invoke-RestMethod http://127.0.0.1:8767/health
+  ```
+  should return `{"ok": true, "service": "creopdm-toolkit", "version": "...", "model": ...}` (`model` is the active model, or `null` if none is open).
+- Log file: `%TEMP%\creopdm_toolkit.log`.
+- Optional ribbon button: File > Options > Customize Ribbon > choose commands from "All Commands" > "CreoPDM Structure Export" (writes the structure JSON to `%TEMP%\creopdm_structure.json`, or the path in `CREOPDM_STRUCTURE_OUT`). The HTTP service does not need it.
 
-## Threading (what was chosen)
-Toolkit is not thread-safe, so the HTTP worker thread never calls it. `user_initialize` runs on Creo's main thread and
-creates a hidden message-only window; each request is `PostMessage`d to it and executed in its window procedure via
-Creo's own message pump. Requests are handled one at a time (sequential accept loop), so exports never overlap. If
-Creo is busy (modal dialog, regeneration) the call times out with `"Creo busy ... timed out"`; `/health` answers
-within 3 s regardless. If the port is in use, the server is skipped, the reason is logged and Creo's message line
-says so; the ribbon command still works.
+**Settings** are environment variables, set before Creo starts:
 
-## Build / unlock / reload
+| Variable | Default | Meaning |
+|---|---|---|
+| `CREOPDM_TOOLKIT_PORT` | `8767` | Port on `127.0.0.1` (the older name `CREOPDM_STRUCTURE_PORT` is still honoured). |
+| `CREOPDM_TOOLKIT_TIMEOUT_MS` | `30000` | How long a request waits for Creo's main thread. |
+
+### Troubleshooting
+| Symptom | Likely cause / fix |
+|---|---|
+| Creo says the app "was not unlocked before distribution", or "Startup of application … failed" | The DLL is not unlocked (a locally rebuilt DLL must be unlocked, see [Build](#build-from-source-optional)). Also check the DLL path in `protk.dat`. |
+| Nothing happens at startup, no message line | Check the `protkdat` line path, the `EXEC_FILE` / `TEXT_DIR` paths in `protk.dat`, and that the `config.pro` you edited is one Creo actually reads. |
+| Message line says HTTP not started | Port 8767 is in use (see the log). Set `CREOPDM_TOOLKIT_PORT` to another port. The ribbon command still works. |
+| `/health` works but a model call returns `ProMdlFiletypeLoad=-1` | Creo could not open the file. For example it was saved in a newer Creo release than the one running (an older Creo cannot open newer files). |
+| Replacing or rebuilding the DLL fails with `cannot open file 'bin\creopdm_structure.dll'` | Creo has the DLL loaded; close Creo first. |
+
+---
+
+## Build from source (optional)
+You only need this to change the code. Requirements: Visual Studio 2022 (x64 tools), the **Creo API Toolkit** option installed (headers and libs under `<Creo>\Common Files\protoolkit`), and a Toolkit license to unlock the result.
+
 ```bat
 build.bat
 unlock.bat
 ```
-Close Creo first (it locks the DLL); rebuilding un-unlocks it, so always run both; then start Creo.
-`config.pro` needs `protkdat C:\dev\Toolkit-PDM\protk.dat`. Customize Ribbon -> "CreoPDM Structure Export" for the icon.
-Log: `%TEMP%\creopdm_toolkit.log` (renamed from `creopdm_structure.log`). Look for `HTTP listening on 127.0.0.1:8767`.
+- Close Creo first (it locks the DLL). **A rebuild is locked again, so always run both**; then start Creo.
+- Both scripts use `%CREO_HOME%` (default `C:\PTC\Creo 10.0.10.0`). To build against another install: `set CREO_HOME=C:\PTC\Creo 13.4.1.0`. If Visual Studio lives elsewhere, edit `VCVARS` at the top of `build.bat`.
+- **Target the oldest release you need.** A DLL built against an older SDK is meant to load in that release and later (not the reverse). SDK differences are handled at compile time: drawing tables use `ProTable` when `ProTable.h` exists (Creo 11+ SDKs) and the older `ProDwgtable*` calls otherwise; one constraint label is matched by value. A Creo 10 SDK build therefore uses the older table calls everywhere, including when run in Creo 13 (deprecated there but present).
+- If a newer Creo reports the app "was not unlocked before distribution", run that release's `protk_unlock.bat` on the same DLL (safe to repeat on an already-unlocked DLL).
 
-## Test matrix (Creo open, aux app loaded)
+---
+
+## HTTP API
+The service binds **127.0.0.1 only**. `GET` and `POST` are equivalent. Every response is JSON; failures are HTTP 200 with `{"ok": false, "error": "..."}` (404 unknown path, 405 bad method). `simp-reps` and `simp_reps` are interchangeable.
+
+| Endpoint | PART | ASM | MFG | DRW | Response (inner key = what CreoPDM stores) |
+|---|:-:|:-:|:-:|:-:|---|
+| `/health` | x | x | x | x | `{ok, service:"creopdm-toolkit", version, model:{fileName,type}\|null}` (`busy:true` if Creo is busy) |
+| `/model` | x | x | x | x | `{ok, fileName, type, model:{fileName,type}}` |
+| `/identity` | x | x | x | x | `{ok, fileName, identity:{file_name, common_name, full_name, generic_name, instance_name, origin, model_type, model_role, subtype, is_modified, version_stamp}}` |
+| `/units` | x | x | x | | `{ok, fileName, units:{system_name, length, mass, time, temperature, angle}}` |
+| `/parameters` | x | x | x | x | `{ok, fileName, parameters:[{name, value, data_type, units, description, is_designated}]}` |
+| `/mass` | x | x | | | `{ok, fileName, mass:{mass, volume, surface_area, density, gravity_center[3], principal_moments[3], cg_inertia_tensor[3][3]}, method}` |
+| `/materials` | x | | | | `{ok, fileName, materials:{current, names[]}}` |
+| `/features` | x | x | | x | `{ok, fileName, features:[{id, name, type, subtype, level, status, suppressed}]}`; for a drawing this is the same inventory as `/drawing` |
+| `/relations` | x | x | | | `{ok, fileName, normal[], post_regeneration[], features:[{feature_id, feature_name, relations[]}], errors[]}` |
+| `/structure` | | x | | | `{ok, fileName, componentCount, skippedNoModel, recurse, unexpandedSubassemblies, partial, components:[...]}`; `?recurse=0` for top level only |
+| `/bom` | | x | | | `{ok, fileName, partial, ..., bom:[ASSEMBLY_ROOT node]}` |
+| `/constraints` | | x | | | `{ok, fileName, recurse, components:[{id, name, path, level, suppressed, packaged, constraints[]}], errors[]}` |
+| `/simp-reps` | | x | | | `{ok, fileName, active:{id, name, is_master}, representations:[{id, name, is_active}], errors[]}` |
+| `/drawing` | | | | x | `{ok, fileName, partial, partial_missing[], sheetCount, viewCount, noteCount, dimensionCount, tableCount, features:[...]}`; `?cells=1` adds table cell text |
+| `/mfg` | | | x | | `{ok, fileName, mfg_type, partial, partial_missing[], modelCount, featureCount, models[], features[]}` |
+| `/harness-probe` | | x | | | diagnostic dump of what Toolkit knows about harnesses (see [Harness](#cabling-harnesses)) |
+| `/collect?domains=a,b` | x | x | x | x | `{ok, fileName, type, domains:{a:{...}, b:{...}}}` |
+
+**Mapping to CreoPDM's metadata fields:** take each endpoint's inner key: `parameters`, `mass`, `units`, `materials`, `identity`, `features`; `/structure` `.components` -> `structure`; `/bom` `.bom` -> `bom`; `relations`, `constraints` and `simp_reps` are the whole response. A parameter `value` is always a string (`"true"/"false"` for BOOLEAN); `units` is set only for DOUBLE.
+
+### Collect contract
+`GET|POST /collect?domains=a,b,c[&fileName=<name.ext[.N]>&path=<absolute path>][&keep=1][&recurse=0|1][&cells=1]`
+
+- **Which domains:** a comma list (`identity,parameters,features,materials,mass,units,...`). Omitted or `all` runs every domain that applies to the model type and leaves out the rest. `bom` and `harness_probe` are **never** in the default set; ask for them explicitly. With an explicit list, a domain that does not apply returns its own `{ok:false, error}` while the others still run.
+- **Which model:** without `fileName` the active model is used. With `fileName` (+ `path`, URL-encoded, the file or its folder):
+  - already in session -> used as is (nothing opened, nothing erased);
+  - not in session -> retrieved **once, silently** with `ProMdlFiletypeLoad`: loaded into memory but **not displayed, no window or tab is created, and it does not become the current model**;
+  - not in session and no `path` -> `{ok:false, "... is not in session; pass path= ..."}` (never a windowed open).
+- **One retrieve per request:** all requested domains run on that single in-session model. Separate HTTP calls for the same file are separate requests, so send one `/collect` with every domain you want.
+- **Erase:** by default, a model **this call retrieved** is erased afterward with `ProMdlErase` (that one model only; never one that was already in session, never the current model; components pulled in with an assembly stay in session, undisplayed). **`keep=1`** skips the erase, so later calls for the same file reuse the in-session model with no reload. Cleanup of kept models is up to the caller.
+- **Single-threaded and queued:** all Toolkit calls run on Creo's main thread, one request at a time (a hidden message-only window receives each request; Creo's own message pump runs it). Concurrent callers queue. If Creo is busy (modal dialog, regeneration) a request times out with `"Creo busy ... timed out"`; `/health` always answers within 3 s.
+- **`timings_ms`** is appended to every `/collect` and single-domain response: `{retrieved, retrieve_ms, <domain>_ms for each domain that ran, erase_ms, total_ms}`, and the same line is logged, e.g.
+  `/collect base-plate.prt retrieved=1 retrieve=842ms identity=1ms features=6ms mass=3ms erase=2ms total=861ms`.
+- Example:
+  ```powershell
+  Invoke-RestMethod "http://127.0.0.1:8767/collect?domains=identity,features&fileName=base-plate.prt&path=C%3A%5Cmodels%5Cbase-plate.prt.4&keep=1"
+  ```
+
+### Quick test matrix
+With Creo running and an appropriate model active:
 ```powershell
 $b = "http://127.0.0.1:8767"
 Invoke-RestMethod "$b/health"
-```
-| Active model | Calls |
-|---|---|
-| Part | `/identity` `/units` `/parameters` `/mass` `/materials` `/features` `/relations`; `/collect?domains=mass,features`; `/structure` must say "applies to ASSEMBLY/MFG" |
-| Assembly | `/structure` `/structure?recurse=1` `/mass` `/features` `/constraints` `/simp-reps` `/relations`; `/collect` |
-| Drawing | `/identity` `/drawing` `/features` `/parameters`; `/mass` must say "applies to PART/ASSEMBLY" |
-
-```powershell
 (Invoke-RestMethod "$b/collect").domains.PSObject.Properties.Name
-Invoke-RestMethod "$b/structure?recurse=1" | ConvertTo-Json -Depth 6
+Invoke-RestMethod "$b/structure" | ConvertTo-Json -Depth 6
 ```
-`curl.exe http://127.0.0.1:8767/mass` works too.
+| Active model | Try |
+|---|---|
+| Part | `/identity` `/units` `/parameters` `/mass` `/materials` `/features` `/relations`; `/structure` must answer "applies to ASSEMBLY" |
+| Assembly | `/structure` `/bom` `/mass` `/features` `/constraints` `/simp-reps` `/relations`; `/collect` |
+| Drawing | `/identity` `/drawing` `/parameters`; `/mass` must answer "applies to PART/ASSEMBLY" |
+| MFG | `/identity` `/parameters` `/units` `/mfg`; `/structure` must answer "(use /mfg)" |
 
-Sample `/structure` output: [samples/tdd-demo.structure.json](samples/tdd-demo.structure.json) (real, from the pilot).
+A sample of an early `/structure` response is in [samples/tdd-demo.structure.json](samples/tdd-demo.structure.json) (current rows also carry `subtype`, `is_skeleton`, `is_harness` and `path`).
 
-## Revision notes (live-test fixes)
-- **Assembly `/mass`**: tries `ProSolidMassPropertyGet`, `ProAssemblySolidMassPropertyGet`, `ProSolidMassPropertyWithDensityGet`; if all
-  fail it sums leaf parts **already in session** (mass, volume, area, mass-weighted COG via `ProAsmcomppathTrfGet`; `method:"component_sum"`,
-  `principal_moments:null`). It only returns a sum when every non-suppressed part resolved; otherwise
-  `ok:false "assembly mass unavailable (<each rc>; component sum: N with mass, M without density, K unresolved)"`. `method` says which path won.
-- **`/constraints`**: full `ProAsmcompConstrType` decode (DEFAULT, FIX, AUTO, SUBSTITUTE, angle/distance types, ...), raw `type_id` for diagnosis,
-  per-component `packaged`. `offset_units` = owner assembly length unit (or `deg` for angular types). Rows with `null` references are
-  expected for DEFAULT/FIX placements. If any row still shows `UNKNOWN`, send its `type_id`.
-- **`/simp-reps`**: no sentinel ids (see above).
-- **`/drawing`**: unique string ids. **`/collect` on a drawing** omits `units` (not applicable) and `drawing`; `features` carries the drawing
-  inventory (for DRAWING `/features` is an alias of `/drawing`, and an explicit `?domains=units` returns a clear not-applicable error).
-- **`/identity`**: `model_role` = `SKELETON`/`SHEETMETAL` when Toolkit reports it, plus a `subtype` label. **`/features`** type names are
-  normalized to `DATUM_PLANE` style. **`/relations`** envelope unchanged (`normal` / `post_regeneration` / `features` / `errors`).
+---
 
-## Drawing inventory (v0.3.x)
-Row fields: `id` (string, unique), `creo_id`, `name`, `type` (SHEET|VIEW|NOTE|DIMENSION|TABLE), `subtype`, `level`, `status`, `suppressed`,
-`sheet`, `sheet_id`, `parent_id`. Levels: sheet 1; view/note/table 2; dimension 3 when it belongs to a view, else 2.
-Extras: NOTE `text`; DIMENSION `value`, `units`, `symbol`, `owner`, `view_id`, `reference`; TABLE `rows`, `columns`, `segments` (+ `cells` with `?cells=1`).
+## Domains in detail
 
-`/collect` on a DRAWING returns `identity`, `parameters`, `drawing` (canonical, same payload as `GET /drawing`). `features` is **omitted** from the
-default collect for drawings (no duplicate payload); an explicit `?domains=features` or `GET /features` still returns the same inventory as an alias.
-`units`, `mass`, `structure`, `constraints`, `simp_reps`, `relations`, `materials` are not collected for drawings.
+### Identity
+- `file_name` is always the logical tip name (`shaft.prt`, lowercase) from the model handle; if the handle gives no name it falls back to the requested `fileName=` as given (e.g. `shaft.prt.2`).
+- `model_role` is `SKELETON`, `SHEETMETAL` or `HARNESS` when known, plus a `subtype` label; `generic_name` and `instance_name` are empty strings (not derived) and `version_stamp` is null.
+- A model that cannot be retrieved gives `ok:false "could not retrieve <file> ..."` with no identity at all; an unusable handle gives `ok:false "model handle for <file> is not usable"`; `/identity` never returns `ok:true` with an empty identity.
+- **MFG:** `common_name` is the MFG file name and `origin` the folder of Toolkit's origin plus the MFG file name (`origin_derived:true`; the `.N` version is not available). Toolkit's own values, which describe the related assembly, are kept in `identity.related_assembly {common_name, origin}`.
 
-## Drawing dimension units (policy)
-Values are never converted; `units` names the unit the value is stored in. **Lengths always use a MODEL length unit, never the drawing sheet unit.**
+### Mass
+`mass`, `volume`, `surface_area`, `density`, `gravity_center`, `principal_moments`; `ok:true` only when real values exist. With no material or density the response is `ok:false` (plus `volume` if known); it never returns zeros.
+For assemblies it tries `ProSolidMassPropertyGet`, `ProAssemblySolidMassPropertyGet`, then `ProSolidMassPropertyWithDensityGet`; if all fail it sums the leaf parts **already in session** (mass, volume, area, mass-weighted centre of gravity; `method:"component_sum"`). A sum is returned only when every non-suppressed part resolved, otherwise
+`ok:false "assembly mass unavailable (<each return code>; component sum: N with mass, M without density, K unresolved)"`. The component sum has no inertia: `principal_moments` and `cg_inertia_tensor` are omitted. `method` says which path produced the numbers.
+
+### Features
+- Component features are excluded (they belong to `/structure`). **Internal (invisible) features** (`ProFeatureVisibilityGet` = FALSE) and any feature whose raw name is Creo's `no_name` placeholder are skipped everywhere features are listed (`/features`, `/relations` feature rows, `/mfg`); the literal `no_name` is never emitted. Unnamed but visible features appear as `TYPE (id)`.
+- Type names are normalised (`DATUM_PLANE`).
+- **Groups nest their members.** Group membership comes from `ProFeatureGroupGet`. `level` is 1 for top-level features; a `GROUP_HEAD` stays at its own level and is followed by its members at `level+1` (nested groups go deeper). A member whose group head is not in the list (e.g. hidden) appears at level 1, so nothing is lost. Applies to ordinary and cabling groups.
+  ```json
+  [{"id":210,"name":"BOLTS","type":"GROUP_HEAD","subtype":"","level":1,"status":"ACTIVE","suppressed":false},
+   {"id":214,"name":"BOLT_1","type":"COMPONENT","subtype":"","level":2,"status":"ACTIVE","suppressed":false}]
+  ```
+
+### Structure
+Full nested tree by default (`?recurse=0` for the top level only). Row: `{id, name, featureName, type, subtype, is_skeleton, is_harness, level, status, suppressed, path, expanded}`.
+- `name` is the model tip with extension (`shaft.prt`, `sub.asm`; lowercase, no `.N`). `type` is PART, ASSEMBLY, SKELETON or HARNESS, never COMPONENT. Only real components are walked, so datums, CSYS and cross-sections cannot appear (they are in `/features`).
+- Levels: top-level components 1, children of a sub-assembly 2, and so on. `path` is the component-id chain from the root (`"46"`, `"40/669"`).
+- Only component features are walked (one `ProSolidFeatVisit` per assembly); nothing of a child's features, parameters, materials or mass is read, and **nothing is retrieved**. A sub-assembly is expanded only if its model is already in memory (always true after the root assembly was loaded, since Creo loads its components). A non-suppressed sub-assembly not in memory is listed by name with `expanded:false`, and the response has `partial:true` and `unexpandedSubassemblies:N`. Suppressed sub-assemblies are never expanded.
+- **Skeletons:** `type:"SKELETON"`, `subtype:"SKELETON"`, `is_skeleton:true` when `ProMdlIsSkeleton` says so (model in memory) or, for a name-only component, when it is the owner assembly's primary skeleton. `is_skeleton:null` means unknown (model not in memory), and `type` is then a best guess of PART.
+
+### BOM
+`GET /bom` or `domains=bom` (assemblies; explicit only).
+- Rolled up per assembly level by **logical tip name**; `quantity` = non-suppressed occurrences under ONE instance of the parent (not multiplied by the parent's quantity). Suppressed components are excluded (`suppressedExcluded`).
+- Each unique sub-assembly is expanded once if its model is in session; nothing is retrieved. Depth limit 6. A sub-assembly that cannot be expanded is a leaf with `expanded:false` and `leaf_reason:"not_in_memory"` (or `"max_depth"`), and the response has `partial:true`.
+- Node: `{filename, quantity, dependency_type: ASSEMBLY_ROOT|ASSEMBLY_MEMBER, type: PART|ASSEMBLY|SKELETON|HARNESS, children[], expanded?, leaf_reason?}`. `bom` is a one-element array holding the `ASSEMBLY_ROOT` wrapper. Harness members are listed with `type:"HARNESS"` (never loaded); skeletons with `type:"SKELETON"` so a consumer can filter them.
+  ```json
+  {"ok":true,"fileName":"main.asm","partial":false,"bom":[{"filename":"main.asm","quantity":1,"dependency_type":"ASSEMBLY_ROOT","type":"ASSEMBLY","expanded":true,"children":[
+     {"filename":"base-plate.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]},
+     {"filename":"bracket.asm","quantity":2,"dependency_type":"ASSEMBLY_MEMBER","type":"ASSEMBLY","expanded":true,"children":[
+        {"filename":"arm.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]}]}]}]}
+  ```
+  (Shortened, hand-written example of the shape.)
+
+### Constraints and simplified representations
+- **`/constraints`:** per-component constraints with the full constraint-type decode (MATE, ALIGN, INSERT, DEFAULT, FIX, AUTO, angle and distance types, ...) and the raw `type_id`; `offset_units` is the owner assembly's length unit (`deg` for angular types); `packaged` per component. A DEFAULT or FIX placement has `null` references by design. The reference objects (`item_type, id, name, path`) and the component wrapper are Toolkit-native; datum sides are raw enum values. A harness with no component feature is skipped.
+- **`/simp-reps`:** `id` / `name` / `is_active`. Toolkit's non-positive sentinel ids (e.g. DEFAULT REP) are reported as `null`; the active rep is matched by name; `active.is_master` is true when the master representation is active.
+
+### Drawings
+`/drawing` (and `/features` on a drawing) returns an outline-ordered inventory: `SHEET 1`, every view / note / dimension / table on sheet 1, then `SHEET 2` and its children, and so on.
+- Row: `id` (unique string: `sheet:N`, `view:N`, `note:N`, `dim:<owner>:N`, `table:N`), `creo_id`, `name`, `type` (SHEET | VIEW | NOTE | DIMENSION | TABLE), `subtype`, `level`, `status`, `suppressed`, `sheet`, `sheet_id`, `parent_id`.
+- Levels: sheets 1; views, notes, dimensions and tables 2 (a dimension's view is in `view_id` / `parent_id`). A row with no sheet (e.g. a drawing-owned dimension not tied to a view) goes last at level 1 with `sheet:null`.
+- Extras: NOTE `text`; DIMENSION `value`, `value_displayed`, `units`, `units_basis`, `units_model`, `symbol`, `owner`, `view_id`, `reference`; TABLE `rows`, `columns`, `segments` (+ `cells` with `?cells=1`). A VIEW's `subtype` is the model it shows.
+- `partial:true` with `partial_missing` only if notes, dimensions or tables could not be enumerated. Notes inside table cells and model annotations (3D notes, GD&T) are not listed.
+- `/collect` on a drawing returns `identity`, `parameters` and `drawing`; `features` is left out of the default set (it would duplicate `drawing`); an explicit `domains=features` still returns the same inventory.
+
+**Dimension units.** Values are never converted; `units` names the unit the value is stored in, and lengths always use a **model** length unit, never the drawing sheet unit:
+
 | Dimension | `units` | `units_basis` | `units_model` |
 |---|---|---|---|
 | ANGLE | `deg` | `angle` | null |
-| Solid-owned (shown from a model) | owner model length unit (e.g. `mm`) | `owner_model` | the owner model |
-| Drawing-created | length unit of the model it measures: its attachment's model, else its view's model, else the first model shown in the drawing | `owner_model` | that model |
+| Shown from a model | the owner model's length unit (e.g. `mm`) | `owner_model` | the owner model |
+| Created in the drawing | the length unit of the model it measures: its attachment's model, else its view's model, else the first model in the drawing | `owner_model` | that model |
 
-`units_basis:"unresolved"` (units null) means no model could be found. `value` is `ProDimensionValueGet` as returned; `value_displayed` is
-`ProDimensionDisplayedValueGet` (rounded, as shown) for cross-checking. `subtype` = LINEAR / RADIUS / DIAMETER / ANGLE / ARC_LENGTH from
-`ProDimensionTypeGet`, with the raw `type_id`; other values give `OTHER`, a failed call gives `UNKNOWN`, both with `units_assumed:true`.
-Ordinate detection is not attempted (the API needs an extra license option). No model is retrieved.
+`units_basis:"unresolved"` (units null) means no model was found. `value` is as Toolkit returns it; `value_displayed` is the rounded value as shown. `subtype` is LINEAR / RADIUS / DIAMETER / ANGLE / ARC_LENGTH with the raw `type_id`; another value gives `OTHER`, a failed call `UNKNOWN`, both with `units_assumed:true`. Ordinate dimensions are not detected separately.
 
-## MFG support
-| Endpoint | MFG |
-|---|---|
-| `/health`, `/model`, `/identity`, `/parameters`, `/units` | yes (`/model` -> `{ok,fileName,type,model:{fileName,type}}` for any model type) |
-| `/mfg` | yes: `{ok,fileName,mfg_type,partial,partial_missing[],modelCount,featureCount,skippedNoModel,models[],features[]}` |
-| `/structure`, `/constraints`, `/features`, `/mass`, `/materials`, `/relations`, `/simp-reps` | rejected with a clear message (`... (use /mfg)` where relevant); **no solid feature walk is ever run on an MFG handle** (an MFG handle is not a ProSolid; that call returned -2) |
+### MFG
+`/mfg` reads session data only (nothing is retrieved). **No solid feature walk is run on an MFG handle** (it is not a solid): `/structure`, `/constraints`, `/features`, `/mass`, `/materials`, `/relations` and `/simp-reps` answer with a clear message (`... (use /mfg)` where relevant).
+- `models[]`: components of the MFG top-level assembly, ids `mfgmdl:N`, with `role` REF_MODEL | WORKPIECE | FIXTURE, type, status, suppressed.
+- `features[]`: features of the MFG storage solid: operations `mfgop:N`, workcells `mfgwc:N`, setups/fixtures `mfgfix:N`, stock models `mfgstock:N` (`type:"STOCK_MODEL"`), NC sequences `mfgseq:N`, other `mfgfeat:N`. `type` is that kind, `subtype` the Toolkit feature type name, `creo_id` the numeric id. COMPONENT features (they are in `models[]`), datum / csys / curve features and internal features are omitted. NC sequences are recognised by feature-type-name keywords (Toolkit has no single NC-sequence type), so an unusual one can show as `OTHER`; its `subtype` says what it is.
+- **Nesting:** operations, workcells, setups/fixtures and stock are `level:1`. Every other feature (sequences, mill windows/volumes/surfaces, drill groups, ...) is `level:2` with `parent_id:"mfgop:N"` when its owner can be determined from Toolkit links, never guessed from visit order:
+  1. `parent_basis:"operation_reference"`: an operation is among the feature's direct parents (`ProFeatureParentsGet`);
+  2. `parent_basis:"referenced_by_sequence"`: no direct operation, but the features that depend on it (`ProFeatureChildrenGet`, up to 4 levels) all belong to the same operation.
 
-`/mfg` reads session data only (nothing retrieved):
-- `models[]`: components of the MFG top-level assembly (`ProMfgAssemGet`), ids `mfgmdl:N`, `role` = REF_MODEL | WORKPIECE | FIXTURE (`ProAsmcompTypeGet`), plus type/status/suppressed.
-- `features[]`: features of the MFG storage solid (`ProMfgSolidGet`): ids `mfgop:N` (operations), `mfgwc:N` (workcells), `mfgfix:N` (setups/fixtures), `mfgseq:N` (NC sequences),
-  `mfgfeat:N` (other). `type` = that kind, `subtype` = Toolkit feature type name, `detail` = Toolkit feature subtype, `creo_id` numeric. Datum/csys/curve features are omitted.
-- `partial:true` + `partial_missing` (`models` and/or `operations`) if either subtree cannot be read.
-- Limits: NC sequences are recognised by feature-type-name keywords (Toolkit has no single NC-sequence feature type), so unusual sequence types may show as `OTHER`
-  (the `subtype` field tells you what they are); operation -> sequence nesting (`level`) is not derived; tools, parameters of sequences and cl-data are not read.
-- `/identity` for MFG still reports whatever `ProMdlCommonnameGet`/`ProMdlOriginGet` return; if `common_name`/`origin` point at the related .asm, that is Toolkit's answer, not a lookup bug here.
-`/collect` on an MFG: `identity`, `units`, `parameters`, `mfg`.
+  A feature used by several operations, or by none, stays unowned: `level`, `parent_id` and `parent_basis` are null and `"nesting"` is added to `partial_missing` (`partial:true`).
+- `/collect` on an MFG returns `identity`, `units`, `parameters`, `mfg`. Tools, sequence parameters and cl-data are not read.
 
-### MFG polish (v0.3.x)
-- `features[]` never contains COMPONENT features (they are in `models[]`).
-- Stock models: `type:"STOCK_MODEL"`, ids `mfgstock:N`, `subtype` = Toolkit feature type name.
-- Nesting: OPERATION / WORKCELL / SETUP / FIXTURE / STOCK_MODEL are `level:1`. An NC sequence is `level:2` with `parent_id:"mfgop:N"` when `ProFeatureParentsGet`
-  lists an operation among its parents. Parents are never guessed from visit order; if none is found `level` and `parent_id` are null and `"nesting"` is added to
-  `partial_missing` (`partial:true`).
-- `/identity` for MFG: `common_name` = the MFG file name and `origin` = the folder of Toolkit's origin + the MFG file name (`origin_derived:true`; the `.N` version is
-  not available from Toolkit). Toolkit's own values (the related assembly) are kept in `identity.related_assembly {common_name, origin}`.
+### Cabling harnesses
+A harness model cannot be opened on its own in Creo ("open the cabling assembly which contains this harness"), so the service never tries.
+- **Detection without loading:** Toolkit has no API to inspect a model without loading it, so the file's first line (<= 200 bytes) is read before any load. Creo-saved harness parts start with `#UGC:2 PART/HARNESS_PART ...` (sheetmetal `PART/SHEETMETAL`, normal parts `PART`). The check runs only for a model not already in session; a harness opened through its cabling assembly is in session and collects normally. The same check is repeated after a failed load. Verified against Creo's own `striped_cable/_striped_cable_preview_harness.prt`; a harness that is not recognised falls through to the generic load error.
+- **Identity succeeds, everything else is skipped.** For a harness tip not in session, `identity` is answered from the file header alone:
+  ```json
+  GET /identity?fileName=600640041454.prt&path=C%3A%5C...%5C600640041454.prt.3
+  {"ok":true,"fileName":"600640041454.prt",
+   "identity":{"file_name":"600640041454.prt","model_type":"PART","model_role":"HARNESS","subtype":"HARNESS",
+               "origin":"C:\\...\\600640041454.prt.3","identity_source":"file_header"}}
+  ```
+  `/collect` for such a tip is `ok:true` with `"harness":true`, `"type":"PART"`, and a per-domain result: `identity` succeeds; `parameters`, `features`, `materials`, `mass`, `units`, `relations` and every other domain return `ok:false` with the `harness_not_openable_in_isolation` message, so a client can save the identity and skip the rest.
+- **Harness members in `/structure` and `/bom`.** A component is a harness when it is in its owner assembly's Toolkit harness list (`ProAssemblyHarnessesTopCollect`) or, for an in-memory model, its on-disk header says `HARNESS`. A supplement pass per assembly adds any harness from that list the component visit did not report (`id:null` if no component feature references it); with recursion on, a root-level pass over `ProAssemblyHarnessesCollect` (the assembly and its sub-assemblies) adds any still missing, at level 1. Rows have `type:"HARNESS"`, `subtype:"HARNESS"`, `is_harness:true`; nothing is loaded.
+  ```json
+  {"id":612,"name":"600640041454.prt","featureName":null,"type":"HARNESS","subtype":"HARNESS",
+   "is_skeleton":false,"is_harness":true,"level":1,"status":"ACTIVE","suppressed":false,"path":"612","expanded":false}
+  ```
+- **`/harness-probe`** (assembly only, diagnostic) dumps what Toolkit knows: the return codes and model names of both harness lists, spools, connector count, every `GROUP_HEAD` with its members, and all cabling-type features. If a harness is in neither list and not a group member, Toolkit does not expose it as a model for that assembly and `/structure` and `/bom` cannot list it.
 
-### MFG nesting rule (all MFG geometry/sequence features)
-Applies to NC sequences **and** every other non-top-level MFG feature (mill windows/volumes/surfaces, drill groups, ...). Operations, workcells, setups/fixtures and stock are level 1.
-Owner resolution, in order, using Toolkit links only (no visit-order or "first operation" guessing):
-1. `operation_reference`: an operation is among the feature's direct parents (`ProFeatureParentsGet`) -> `level:2`, `parent_id:"mfgop:N"`.
-2. `referenced_by_sequence`: no direct operation, but the features that depend on it (`ProFeatureChildrenGet`, followed up to 4 levels, e.g. window -> volume -> sequence) all belong to the SAME operation -> nested under it.
-   Used by several operations, or used by none -> left unowned.
-Unowned features keep `level`/`parent_id`/`parent_basis` null and `"nesting"` stays in `partial_missing` (with `partial:true`); it is removed once nothing is unowned. Features that are
-not geometry-related but still unowned (e.g. a stray `OTHER` feature) also count, so `nesting` can remain listed even when all windows are parented; check which rows have `level:null`.
+---
 
-## Collecting a model other than the active one (no windows)
-Every domain endpoint and `/collect` accept `?fileName=<name.ext[.N]>&path=<absolute path to the file>` (URL-encode the path). Without `fileName` the active model is used.
-- `fileName` already in session -> used as is (nothing opened, nothing erased).
-- Not in session -> retrieved **silently** with `ProMdlFiletypeLoad(path, type, ask_user_about_reps=FALSE)`: the model is loaded into memory but **not displayed, no window/tab is created, and it does not
-  become the current model**. `path` may be the file or its folder. A missing `path` for a model that is not in session returns `{ok:false,"... is not in session; pass path= ..."}` (never a windowed open).
-- After the request, a model **this call retrieved** is erased with `ProMdlErase` (that single model only; never `ProMdlEraseAll`, never anything that was already in session, never the current model).
-  Components pulled in with an assembly stay in session, undisplayed. `?keep=1` leaves the retrieved model in session as well.
-- Example: `Invoke-RestMethod "http://127.0.0.1:8767/collect?domains=identity,features&fileName=base-plate.prt&path=C%3A%5Cmodels%5Cbase-plate.prt.4"`
-- Not yet verified in Creo: run it for 20+ different parts and confirm the window/tab count does not grow.
+## Expected skips / error strings
+`/collect` and the domain endpoints return `{ok:false, error:"..."}` with these messages when a model cannot be targeted. They are safe to treat as expected skips:
 
-### `/structure` row shape (Creo.JS Structure rows)
-`{id, name, featureName, type, subtype, level, status, suppressed, path}` (+ `expanded` with `?recurse=1`). `name` is always the model tip with extension (`shaft.prt`, `sub.asm`, lowercase, no `.N`);
-`type` is PART | ASSEMBLY | SKELETON (never COMPONENT); `subtype` is `""`; `path` is the component id path (`"46"` top level, `"40/669"` nested). Only real components are walked,
-so datums, CSYS and cross-sections cannot appear (they are in `/features`). In `/mfg`, `models[]` rows use the same `name`/`type` plus `role`.
-
-## Collect contract (summary)
-`GET|POST /collect?domains=a,b,c[&fileName=<name.ext[.N]>&path=<abs path>][&keep=1][&recurse=0|1][&cells=1]`
-- **Target:** `fileName` (+ `path`) picks the model; without it the active model is used. In session -> used as is. Not in session -> ONE silent retrieve (`ProMdlFiletypeLoad`, no display/window). No `path` and not in session -> `ok:false`.
-- **One retrieve per request:** all requested domains run on that single in-session model; nothing is retrieved or erased between domains. (Separate HTTP calls for the same file are separate requests; use one `/collect` with all domains instead, or `keep=1`.)
-- **`domains`:** comma list (`identity,parameters,features,materials,mass,units,...`); omitted/`all` = every domain that applies to the model type.
-- **Erase:** default = after the request, a model THIS call retrieved is erased (`ProMdlErase`, that model only; never one already in session, never the current model). **`keep=1`** skips the erase, so the model stays in session (undisplayed) and later calls for it reuse it with no reload (`retrieved:false`, `retrieve_ms` ~0). The caller owns cleanup of kept models (or leave them). Components pulled in with an assembly always stay in session.
-- **Single-threaded / queued:** all Toolkit work runs on Creo's main thread and requests are handled strictly one at a time; concurrent callers queue (30 s per-request timeout, `CREOPDM_TOOLKIT_TIMEOUT_MS`).
-- **`timings_ms`** is appended to every `/collect` and single-domain response: `{retrieved, retrieve_ms, <domain>_ms for each domain that ran, erase_ms, total_ms}`. The same line is written to `%TEMP%\creopdm_toolkit.log`, e.g.
-  `/collect base-plate.prt retrieved=1 retrieve=842ms identity=1ms features=6ms mass=3ms erase=2ms total=861ms`.
-
-### Hidden / unnamed features
-`/features`, the per-feature rows of `/relations`, and `/mfg` features skip **internal (invisible) features** (`ProFeatureVisibilityGet` = FALSE; `ProSolidFeatVisit` visits them otherwise) and
-any feature whose raw name is Creo's `no_name` placeholder (case-insensitive). The literal `no_name` is never emitted: a feature-relations row with such a name has `feature_name: null`.
-Unnamed but *visible* features still appear with the `TYPE (id)` fallback name.
-
-### `/structure` is now a full nested tree by default
-`recurse` now defaults to **1** (use `?recurse=0` for top-level only). Levels: top-level components 1, children of a sub-assembly 2, and so on; `path` is the id chain from the root.
-Only **component features** are walked (one `ProSolidFeatVisit` per assembly); no features/parameters/materials/mass of children are read and **nothing is retrieved**.
-A sub-assembly is expanded only if its model is already in memory (always true after the root assembly was retrieved/loaded, since Creo loads its components, or after parts-first + `keep=1`).
-A non-suppressed sub-assembly that is not in memory is listed by name only with `expanded:false`; the response then has `partial:true` and `unexpandedSubassemblies:N`. Suppressed sub-assemblies are never expanded.
-The existing domain name (`structure`) and URL are unchanged, so the agent needs no new parameter.
-
-### Skeleton typing in `/structure`
-A component is a skeleton when `ProMdlIsSkeleton` says so for its model (if in memory), or, for name-only components, when it matches the owner assembly's primary skeleton (`ProAsmSkeletonGet`).
-Rows then have `type:"SKELETON"`, `subtype:"SKELETON"` and `is_skeleton:true`. Other parts: `type:"PART"`, `is_skeleton:false`. If a component model is not in memory and is not the owner's
-primary skeleton, `is_skeleton` is `null` (unknown, not "false") and `type` is `PART`; in that case `type` is a best guess. Assemblies are always `is_skeleton:false`.
-
-### Identity hardening
-- `identity.file_name` is always the logical tip name (`shaft.prt`, lowercase) from the model handle; if the handle returns no name it falls back to the requested `fileName=` as given (e.g. `shaft.prt.2`).
-- If the model cannot be retrieved: `{ok:false,error:"could not retrieve <file> ..."}` (no identity at all). If the handle is unusable: `ok:false "model handle for <file> is not usable"`.
-- If there is still no name, `/identity` returns `ok:false "identity unavailable: model has no usable file name"`; it never returns `ok:true` with an empty identity.
-
-## Expected skips / stable error strings
-Collect with `fileName=`+`path=` returns `{ok:false,error:"..."}` with these prefixes (safe to treat as expected skips):
 | Error prefix | Meaning |
 |---|---|
-| `harness_not_openable_in_isolation: open the cabling assembly that contains <tip>` | The file is a cabling harness part. Creo cannot open it standalone, so no load is attempted. |
-| `<tip> is not in session; pass path= ...` | Model not in session and no `path`. |
+| `harness_not_openable_in_isolation: open the cabling assembly that contains <tip>` | The file is a cabling harness part; no load is attempted. |
+| `<tip> is not in session; pass path= ...` | Not in session and no `path` was given. |
 | `file_not_found: <path> (ProMdlFiletypeLoad=N)` | The path does not exist. |
-| `could not retrieve <tip> from path (ProMdlFiletypeLoad=N)` | Any other load failure. |
+| `could not retrieve <tip> from path (ProMdlFiletypeLoad=N)` | Any other load failure (for example a file saved in a newer Creo than the one running). |
+| `<domain> applies to PART/ASSEMBLY/...; active model is X` | The domain does not apply to that model type. |
 
-Harness detection: Toolkit has no API to inspect a model without loading it (a `ProHarness` is just a loaded part), so the file's first line is read (<=200 bytes) before any load: Creo-saved harness parts start with
-`#UGC:2 PART/HARNESS_PART ...` (sheetmetal parts start `PART/SHEETMETAL`, normal parts `PART`). The check runs only when the model is NOT already in session; if the harness was opened through its cabling
-assembly it is in session and collects normally. The same check is repeated after a failed load. Verified against Creo's own `striped_cable/_striped_cable_preview_harness.prt`; if a harness from another Creo version
-is not recognised it falls through to the generic `could not retrieve ... =-1` error.
+---
 
-### Harness tips: identity succeeds, everything else is skipped
-For a harness tip that is not in session, `identity` is answered from the file header alone (no `ProMdlFiletypeLoad`, nothing retrieved):
-```json
-GET /identity?fileName=600640041454.prt&path=C%3A%5C...%5C600640041454.prt.3
-{"ok":true,"fileName":"600640041454.prt",
- "identity":{"file_name":"600640041454.prt","model_type":"PART","model_role":"HARNESS","subtype":"HARNESS",
-             "origin":"C:\...\600640041454.prt.3","identity_source":"file_header"}}
-```
-`file_name` is the requested tip (lowercased, as given incl. any `.N`). `identity_source:"file_header"` marks it as not read from a loaded model.
-
-`/collect` for a harness tip is `ok:true` with `"harness":true`, `"type":"PART"` and a per-domain result, so CreoPDM can save identity and skip the rest:
-```json
-GET /collect?fileName=600640041454.prt&path=...&domains=identity,parameters,features
-{"ok":true,"fileName":"600640041454.prt","type":"PART","harness":true,
- "domains":{"identity":{"ok":true,"fileName":"...","identity":{...as above...}},
-            "parameters":{"ok":false,"error":"harness_not_openable_in_isolation: open the cabling assembly that contains 600640041454.prt"},
-            "features":{"ok":false,"error":"harness_not_openable_in_isolation: ..."}}}
-```
-With no `domains` (or `all`) the same applies to every domain a PART collect would run. Domain behavior for a harness tip not in session:
-| Endpoint / domain | Result |
+## Developer notes
+| File | Role |
 |---|---|
-| `identity` | `ok:true` (HARNESS stub above) |
-| `parameters`, `features`, `materials`, `mass`, `units`, `relations`, any other single-domain endpoint | `ok:false` `harness_not_openable_in_isolation: ...` |
-Units are not offered for harnesses: they need a loaded model. A harness already in session (opened through its cabling assembly) is collected normally with real data. Harness responses also carry `timings_ms` (retrieve ~0).
+| `src/main.c` | `user_initialize` / `user_terminate`, the ribbon command (`creopdm_structure_export`) |
+| `src/http_server.c` | the 127.0.0.1 server, worker thread, main-thread marshalling |
+| `src/router.c` | path -> collector table, `/health`, `/model`, `/collect`, targeting and silent retrieve, timings |
+| `src/common.c/.h` | string builder, JSON writer, logging, model context |
+| `src/structure.c` | component walker (shared by structure, BOM, constraints, mass) and `/structure` |
+| `src/model.c` | identity, units, parameters, mass, materials |
+| `src/features.c` | features (with group nesting) and relations |
+| `src/assembly.c` | constraints, simplified representations |
+| `src/bom.c` | nested BOM |
+| `src/drawing.c` | drawing inventory |
+| `src/mfg.c` | MFG inventory |
+| `src/cabling.c` | harness probe |
 
-### Harness members in `/structure`
-Harness components are always listed, never retrieved:
-- The component name is resolved without loading (`ProAsmcompMdlGet` -> `ProAsmcompMdlMdlnameGet` -> `ProAsmcompMdldataGet`), so a harness with no in-memory model keeps its tip name.
-- A component is marked harness when it is in the owner assembly's Toolkit harness list (`ProAssemblyHarnessesTopCollect`) or, for an in-memory model, its on-disk header says `HARNESS` (same `#UGC:` check used for `harness_not_openable_in_isolation`).
-- A **supplement pass** per assembly (including sub-assemblies) adds any harness from that list the component visit did not report. If no component feature references it, the row has `id:null`.
-Row example:
-```json
-{"id":612,"name":"600640041454.prt","featureName":null,"type":"HARNESS","subtype":"HARNESS",
- "is_skeleton":false,"is_harness":true,"level":1,"status":"ACTIVE","suppressed":false,"path":"612","expanded":false}
-```
-Other rows have `is_harness:false`. HARNESS rows are counted in `componentCount`. `/constraints` skips a harness that has no component feature. A harness still counts in the component-sum assembly mass if its model is in memory.
-Unverified in Creo: if harness members are neither `PRO_FEAT_COMPONENT` features nor in Toolkit's harness list for their owner assembly, they will still be missing; send the raw `/structure` JSON in that case.
+**Threading.** Toolkit is not thread-safe, so the HTTP worker thread never calls it. `user_initialize` runs on Creo's main thread and creates a hidden message-only window; each request is posted to it and executed in its window procedure through Creo's own message pump. Requests are handled one at a time, so work never overlaps. If the port is already in use, the server is skipped, the reason is logged, and the message line says so; the ribbon command still works.
 
-## `bom` domain (assemblies)
-`GET /bom` or `/collect?domains=bom` (ASSEMBLY only). It is **not** in the default `/collect` set; request it explicitly. `structure` is unchanged and separate.
-- Rolled up per assembly level by **logical tip name** (`shaft.prt`, never `shaft.prt.2`). `quantity` = non-suppressed occurrences under ONE instance of the parent (children are not multiplied by the parent's quantity). Suppressed components are excluded (`suppressedExcluded` counts them).
-- Each unique sub-assembly is expanded once if its model is already in session (same keep=1 / parts-first pattern); **nothing is retrieved**. Depth limit 6.
-- A sub-assembly that cannot be expanded is a leaf with `"expanded":false` and `"leaf_reason":"not_in_memory"` (or `"max_depth"`); the response then has `partial:true`, `unexpandedNotInMemory` / `unexpandedMaxDepth`.
-- Node: `{filename, quantity, dependency_type: ASSEMBLY_ROOT|ASSEMBLY_MEMBER, type: PART|ASSEMBLY|SKELETON|HARNESS, children[], expanded?, leaf_reason?}`. Harness members are listed with `type:"HARNESS"` and a quantity, never loaded. Skeletons are listed with `type:"SKELETON"` so CreoPDM can filter them if its BOM should omit them.
-- `bom` is a single-element array holding the `ASSEMBLY_ROOT` wrapper (matches `CreoMetadataRequest.bom` as a list of nodes).
-
-Illustrative sample (small nested assembly `main.asm`: 1 sub-assembly used twice, 4 screws, 1 harness; the sub-assembly's own children listed once):
-```json
-{"ok":true,"fileName":"main.asm","partial":false,"unexpandedNotInMemory":0,"unexpandedMaxDepth":0,"suppressedExcluded":0,"maxDepth":6,
- "bom":[{"filename":"main.asm","quantity":1,"dependency_type":"ASSEMBLY_ROOT","type":"ASSEMBLY","expanded":true,"children":[
-   {"filename":"base-plate.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]},
-   {"filename":"bracket.asm","quantity":2,"dependency_type":"ASSEMBLY_MEMBER","type":"ASSEMBLY","expanded":true,"children":[
-      {"filename":"arm.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]},
-      {"filename":"bushing.prt","quantity":2,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]}]},
-   {"filename":"iso4762-m10x30.prt","quantity":4,"dependency_type":"ASSEMBLY_MEMBER","type":"PART","children":[]},
-   {"filename":"600640041454.prt","quantity":1,"dependency_type":"ASSEMBLY_MEMBER","type":"HARNESS","children":[]}]}]}
-```
-(Sample is hand-written to show the shape; it is not output captured from Creo.)
-
-### `/features`: groups nest their members
-Group membership comes from `ProFeatureGroupGet` (the group head that contains a feature). Rows keep the existing shape `{id,name,type,subtype,level,status,suppressed}`; `level` is now filled:
-top-level features are `level:1`, a `GROUP_HEAD` stays at its own level and is followed by its members at `level+1` (nested groups go deeper). Previously `level` was `null` for every row.
-A member whose group head is not in the list (e.g. hidden/internal) is shown at level 1, so no feature is lost. Applies to ordinary groups and cabling groups alike.
-```json
-[{"id":40,"name":"DEFAULT_CSYS","type":"COORDINATE_SYSTEM","subtype":"","level":1,"status":"ACTIVE","suppressed":false},
- {"id":210,"name":"BOLTS","type":"GROUP_HEAD","subtype":"","level":1,"status":"ACTIVE","suppressed":false},
- {"id":214,"name":"BOLT_1","type":"COMPONENT","subtype":"","level":2,"status":"ACTIVE","suppressed":false},
- {"id":216,"name":"BOLT_2","type":"COMPONENT","subtype":"","level":2,"status":"ACTIVE","suppressed":false},
- {"id":230,"name":"HARNESS-ACTUATORS","type":"GROUP_HEAD","subtype":"","level":1,"status":"ACTIVE","suppressed":false},
- {"id":234,"name":"SPOOL_1","type":"SPOOL","subtype":"","level":2,"status":"ACTIVE","suppressed":false}]
-```
-(Illustrative shape; not captured output.)
-
-### Harness discovery (`/harness-probe`) and the wider harness list
-Harnesses are listed in `/structure` (and `/bom`) from: (1) component features whose model is a harness (in the owner assembly's `ProAssemblyHarnessesTopCollect` list, or on-disk header `HARNESS`), (2) the owner's harness list
-for any harness no component feature references (`id:null`), and (3) with `recurse` on, a root-level pass over `ProAssemblyHarnessesCollect` (the assembly **and its sub-assemblies**) for any harness not yet reported
-(listed at level 1, no owner path). Nothing is loaded.
-
-`GET /harness-probe` (assembly only, diagnostic, not part of the default `/collect`; also `domains=harness_probe`) dumps what Toolkit knows, to find out how a given assembly represents its harness:
-`ProAssemblyHarnessesTopCollect` / `ProAssemblyHarnessesCollect` return codes and model names, spools, connector count, every `GROUP_HEAD` with its members (feature id/type/name and, for component members, the model name and
-whether it is in memory), and all cabling-type features (cable, cable segment, sub-harness, ribbon cable). If a harness tip is not in `harnessesTop`/`harnessesAll` and not a component member of a group, Toolkit does not expose it as a
-model for that assembly, and `/structure`/`/bom` cannot list it.
-
-## Target release / building for Creo 10 (and later)
-`build.bat` and `unlock.bat` use the Toolkit SDK and unlock script of `%CREO_HOME%` (default `C:\PTC\Creo 10.0.10.0`; override with `set CREO_HOME=C:\PTC\Creo 13.4.1.0`). The DLL is built against the OLDEST release you need and is
-meant to load in that release and later (not the reverse). Source differences between SDKs are handled at compile time: drawing tables use `ProTable` when `ProTable.h` exists (Creo 11+ SDKs) and the older `ProDwgtable*` API otherwise
-(Creo 8-10 SDKs; deprecated but still present in newer Creo); the `TANGENT_ALIGN` constraint label is matched by value (36). A Creo 10 SDK build therefore uses `ProDwgtable*` everywhere, including when run in Creo 13.
-Unlock once with the build's `CREO_HOME`; if a newer Creo reports the app "was not unlocked before distribution", run that release's `protk_unlock.bat` on the same DLL (safe to repeat).
-Not yet tested at run time in Creo 10 or 13. Files last saved in a newer release than the Creo that opens them cannot be retrieved (`ProMdlFiletypeLoad=-1`).
-
-### `/drawing` features are in outline order (sheet, then its children)
-`features` is emitted as: `SHEET 1`, all views/notes/dimensions/tables whose `sheet` is 1, then `SHEET 2` and its children, and so on to the last sheet. Sheets are `level:1` (and now carry `sheet:N` / `sheet_id`);
-their views, notes, dimensions and tables are `level:2` with the same `sheet` / `sheet_id` and a `parent_id` (`sheet:N`, and for dimensions the owning view in `view_id`). Within a sheet the order is views, notes, dimensions, tables.
-Dimensions are now `level:2` (previously 3 when they belonged to a view) so an indent-by-level outline does not hang them under the last note/table; the view link is `view_id` / `parent_id`.
-Rows with no sheet (e.g. a drawing-owned dimension not tied to a view) are listed last at `level:1` with `sheet:null`. Ids are unchanged (`sheet:N`, `view:N`, `note:N`, `dim:<owner>:N`, `table:N`).
+**Add a domain.** Write `collect_x(Sb*, const Ctx*, const Query*)` and add one row to `DOMAINS[]` in `router.c`. It then gets its own `GET /x` and is available through `/collect?domains=x`.
