@@ -184,7 +184,7 @@ static ProError feat_row(ProFeature *feat, ProError status, ProAppData data)
     }
     if (ProFeatureTypenameGet(feat, tn) == PRO_TK_NO_ERROR) w2u(tn, type, sizeof type);
     if (!type[0]) sprintf(type, "FEATTYPE_%d", (int)ft);
-    else { char *t; for (t = type; *t; ++t) *t = (*t == ' ') ? '_' : (char)toupper((unsigned char)*t); }
+    else { char *t; for (t = type; *t; ++t) *t = (*t == ' ') ? '_' : (*t >= 'a' && *t <= 'z') ? (char)(*t - 32) : *t;   /* ASCII-only upper-casing */ }
     if (is_geometry_noise(type)) return PRO_TK_NO_ERROR;
 
     sub[0] = 0;

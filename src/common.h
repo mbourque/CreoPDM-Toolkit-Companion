@@ -17,39 +17,14 @@
 #include <string.h>
 #include <ctype.h>
 #include <windows.h>
+#include "textutil.h"
 
 #define CPDM_SERVICE  "creopdm-toolkit"
-#define CPDM_VERSION  "0.3.0"
+#define CPDM_VERSION  "0.3.1"
 
-/* ---------- growable string ---------- */
-typedef struct { char *p; size_t len, cap; } Sb;
-void sb_puts(Sb *s, const char *t);
-void sb_putn(Sb *s, const char *t, size_t n);
-void sb_free(Sb *s);
-
-/* ---------- JSON writer (auto commas) ---------- */
-typedef struct {
-    Sb  *sb;
-    int  depth;
-    char need_comma[40];
-    char is_arr[40];
-} Jw;
-void jw_init(Jw *w, Sb *sb);
-void jw_obj(Jw *w, const char *key);      /* key NULL inside arrays / at root */
-void jw_end_obj(Jw *w);
-void jw_arr(Jw *w, const char *key);
-void jw_end_arr(Jw *w);
-void jw_str(Jw *w, const char *key, const char *v);   /* v NULL -> null */
-void jw_int(Jw *w, const char *key, long long v);
-void jw_dbl(Jw *w, const char *key, double v);
-void jw_bool(Jw *w, const char *key, int v);
-void jw_null(Jw *w, const char *key);
-void jw_raw(Jw *w, const char *key, const char *raw);
-void jw_wstr(Jw *w, const char *key, const wchar_t *v);
+/* Sb, Jw (JSON writer), w2u/u2w, ASCII helpers and query parsing live in textutil.h (no Toolkit dependency). */
 
 /* ---------- helpers ---------- */
-void  w2u(const wchar_t *w, char *out, int outsz);   /* UTF-16 -> UTF-8 */
-void  lower_ascii(char *s);
 int   is_noname_u(const char *u);                    /* "no_name" (any case): Creo placeholder for unnamed hidden features */
 int   file_is_harness_w(const wchar_t *wpath);       /* first line of the file says PART/HARNESS_PART */
 void  logf_(const char *fmt, ...);                   /* %TEMP%\creopdm_toolkit.log */
@@ -57,11 +32,6 @@ void  emit_error(Sb *out, const char *msg);          /* resets *out to {"ok":fal
 void  emit_errorf(Sb *out, const char *fmt, ...);
 
 /* ---------- request / model context ---------- */
-typedef struct {
-    const char *query;      /* raw query string without '?', may be "" */
-} Query;
-int  q_get(const Query *q, const char *key, char *buf, int bufsz);  /* 1 if present (raw) */
-int  q_get_dec(const Query *q, const char *key, char *buf, int bufsz);  /* URL-decoded (%XX, +) */
 
 typedef struct {
     int         has;            /* a model is current */

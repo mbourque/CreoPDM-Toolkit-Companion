@@ -219,7 +219,7 @@ static int parse_file_name(const char *fn, ProMdlName base, ProMdlfileType *ft)
     else return 0;
     *dot = 0;
     (void)end;
-    MultiByteToWideChar(CP_UTF8, 0, tmp, -1, base, PRO_NAME_SIZE);
+    if (!u2w(tmp, base, PRO_NAME_SIZE)) return 0;
     return 1;
 }
 
@@ -244,7 +244,7 @@ static int resolve_target(const char *fn, const char *path, ProMdl *out_mdl, int
 
     *retrieved = 0;
     if (!parse_file_name(fn, base, &ft)) {
-        _snprintf(err, errsz, "fileName '%s' must end in .prt/.asm/.drw/.mfg (optionally .N)", fn);
+        _snprintf(err, errsz, "fileName '%s' must end in .prt/.asm/.drw/.mfg (optionally .N), be valid UTF-8 and fit the name length", fn);
         err[errsz - 1] = 0;
         return 0;
     }
@@ -265,7 +265,11 @@ static int resolve_target(const char *fn, const char *path, ProMdl *out_mdl, int
     if (pl && (full[pl - 1] == '\\' || full[pl - 1] == '/')) {
         strncat(full, fn, sizeof full - pl - 1);
     }
-    MultiByteToWideChar(CP_UTF8, 0, full, -1, wp, PRO_PATH_SIZE);
+    if (!u2w(full, wp, PRO_PATH_SIZE)) {
+        _snprintf(err, errsz, "path is not valid UTF-8 or is too long (percent-encode non-ASCII characters as UTF-8)");
+        err[errsz - 1] = 0;
+        return 0;
+    }
     /* Cabling harness parts cannot be opened in isolation (Creo: "open the cabling assembly which contains
        this harness"). Toolkit has no API to inspect a model without loading it, so read the file header line:
        a harness is saved as "#UGC:2 PART/HARNESS_PART ...". Rejecting here avoids the load (and the Creo UI message). */
@@ -487,7 +491,7 @@ static int do_url(const Query *q, Sb *out)
         emit_error(out, "url must start with http:// or https://");
         return 200;
     }
-    if (GetEnvironmentVariableA("CREOPDM_URL", cfg, sizeof cfg) > 0 && cfg[0]) {     /* same origin as CreoPDM */
+    if (getenv_utf8("CREOPDM_URL", cfg, sizeof cfg) && cfg[0]) {     /* same origin as CreoPDM */
         origin_of(url, o1, sizeof o1);
         origin_of(cfg, o2, sizeof o2);
         if (strcmp(o1, o2) != 0) {
@@ -504,7 +508,7 @@ static int do_url(const Query *q, Sb *out)
         if (p >= 10.0 && p <= 95.0) target = p;
     }
 
-    MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1600);
+    if (!u2w(url, wurl, 1600)) { emit_error(out, "url is not valid UTF-8 (percent-encode it as UTF-8)"); return 200; }
     rc = ProWindowCurrentGet(&win);
     if (rc == PRO_TK_NO_ERROR) rc = ProWindowURLShow(win, wurl);
     logf_("/url %s -> %d (window %d)", url, (int)rc, win);

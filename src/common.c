@@ -1,120 +1,25 @@
-/* common.c - string builder, JSON writer, logging, model context */
+/* common.c - logging, error envelopes, model context (text/JSON helpers are in textutil.c) */
 #include "common.h"
 
-/* ---------- Sb ---------- */
-static void sb_reserve(Sb *s, size_t extra)
-{
-    if (s->len + extra + 1 > s->cap) {
-        size_t n = s->cap ? s->cap * 2 : 4096;
-        while (n < s->len + extra + 1) n *= 2;
-        s->p = (char *)realloc(s->p, n);
-        s->cap = n;
-    }
-}
-void sb_putn(Sb *s, const char *t, size_t n)
-{
-    sb_reserve(s, n);
-    memcpy(s->p + s->len, t, n);
-    s->len += n;
-    s->p[s->len] = 0;
-}
-void sb_puts(Sb *s, const char *t) { sb_putn(s, t, strlen(t)); }
-void sb_free(Sb *s) { free(s->p); s->p = NULL; s->len = s->cap = 0; }
-
-/* ---------- JSON ---------- */
-static void put_json_str(Sb *s, const char *u)
-{
-    sb_puts(s, "\"");
-    for (; *u; ++u) {
-        unsigned char c = (unsigned char)*u;
-        if (c == '"') sb_puts(s, "\\\"");
-        else if (c == '\\') sb_puts(s, "\\\\");
-        else if (c == '\n') sb_puts(s, "\\n");
-        else if (c == '\r') sb_puts(s, "\\r");
-        else if (c == '\t') sb_puts(s, "\\t");
-        else if (c < 0x20) { char b[8]; sprintf(b, "\\u%04x", c); sb_puts(s, b); }
-        else sb_putn(s, (const char *)&c, 1);
-    }
-    sb_puts(s, "\"");
-}
-
-void jw_init(Jw *w, Sb *sb) { memset(w, 0, sizeof *w); w->sb = sb; }
-
-/* comma / newline / key prefix for the next value */
-static void jw_pre(Jw *w, const char *key)
-{
-    if (w->need_comma[w->depth]) sb_puts(w->sb, ",");
-    w->need_comma[w->depth] = 1;
-    if (w->is_arr[w->depth] && w->depth <= 2) sb_puts(w->sb, "\n");
-    if (key) { put_json_str(w->sb, key); sb_puts(w->sb, ": "); }
-}
-static void jw_open(Jw *w, const char *key, const char *br, int arr)
-{
-    jw_pre(w, key);
-    sb_puts(w->sb, br);
-    w->depth++;
-    w->need_comma[w->depth] = 0;
-    w->is_arr[w->depth] = (char)arr;
-}
-void jw_obj(Jw *w, const char *key) { jw_open(w, key, "{", 0); }
-void jw_arr(Jw *w, const char *key) { jw_open(w, key, "[", 1); }
-void jw_end_obj(Jw *w) { w->depth--; sb_puts(w->sb, "}"); }
-void jw_end_arr(Jw *w) { w->depth--; sb_puts(w->sb, "]"); }
-void jw_str(Jw *w, const char *key, const char *v)
-{
-    jw_pre(w, key);
-    if (v) put_json_str(w->sb, v); else sb_puts(w->sb, "null");
-}
-void jw_wstr(Jw *w, const char *key, const wchar_t *v)
-{
-    char u[1024];
-    if (!v) { jw_null(w, key); return; }
-    w2u(v, u, sizeof u);
-    jw_str(w, key, u);
-}
-void jw_int(Jw *w, const char *key, long long v)
-{
-    char b[32];
-    jw_pre(w, key);
-    sprintf(b, "%lld", v);
-    sb_puts(w->sb, b);
-}
-void jw_dbl(Jw *w, const char *key, double v)
-{
-    char b[40];
-    jw_pre(w, key);
-    if (v != v || v > 1e300 || v < -1e300) { sb_puts(w->sb, "null"); return; }
-    sprintf(b, "%.12g", v);
-    sb_puts(w->sb, b);
-}
-void jw_bool(Jw *w, const char *key, int v) { jw_pre(w, key); sb_puts(w->sb, v ? "true" : "false"); }
-void jw_null(Jw *w, const char *key) { jw_pre(w, key); sb_puts(w->sb, "null"); }
-void jw_raw(Jw *w, const char *key, const char *raw) { jw_pre(w, key); sb_puts(w->sb, raw); }
 
 /* ---------- misc ---------- */
-void w2u(const wchar_t *w, char *out, int outsz)
-{
-    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, out, outsz, NULL, NULL);
-    if (n <= 0) out[0] = 0;
-    out[outsz - 1] = 0;
-}
-void lower_ascii(char *s) { for (; *s; ++s) *s = (char)tolower((unsigned char)*s); }
 
 void logf_(const char *fmt, ...)
 {
-    char tmp[MAX_PATH], path[MAX_PATH + 32], line[512];
+    wchar_t tmp[MAX_PATH], path[MAX_PATH + 32];
+    char line[512];
     SYSTEMTIME st;
     FILE *f;
     va_list ap;
-    DWORD t = GetTempPathA(sizeof tmp, tmp);
-    if (t == 0 || t >= sizeof tmp) return;
-    _snprintf(path, sizeof path, "%screopdm_toolkit.log", tmp);
-    path[sizeof path - 1] = 0;
+    DWORD t = GetTempPathW(MAX_PATH, tmp);          /* wide: a temp folder under a non-ASCII user name works too */
+    if (t == 0 || t >= MAX_PATH) return;
+    _snwprintf(path, MAX_PATH + 32, L"%lscreopdm_toolkit.log", tmp);
+    path[MAX_PATH + 31] = 0;
     va_start(ap, fmt);
-    _vsnprintf(line, sizeof line, fmt, ap);
+    _vsnprintf(line, sizeof line, fmt, ap);        /* the message text is UTF-8 and is written as is */
     va_end(ap);
     line[sizeof line - 1] = 0;
-    f = fopen(path, "a");
+    f = _wfopen(path, L"a");
     if (!f) return;
     GetLocalTime(&st);
     fprintf(f, "%04d-%02d-%02d %02d:%02d:%02d %s\n", st.wYear, st.wMonth, st.wDay,
@@ -145,24 +50,6 @@ void emit_errorf(Sb *out, const char *fmt, ...)
     emit_error(out, m);
 }
 
-int q_get(const Query *q, const char *key, char *buf, int bufsz)
-{
-    const char *p = q ? q->query : NULL;
-    size_t kl = strlen(key);
-    while (p && *p) {
-        const char *amp = strchr(p, '&');
-        size_t seg = amp ? (size_t)(amp - p) : strlen(p);
-        if (seg >= kl && strncmp(p, key, kl) == 0 && (seg == kl || p[kl] == '=')) {
-            size_t vl = seg > kl + 1 ? seg - kl - 1 : 0;
-            if (vl >= (size_t)bufsz) vl = bufsz - 1;
-            if (seg > kl + 1) memcpy(buf, p + kl + 1, vl);
-            buf[vl] = 0;
-            return 1;
-        }
-        p = amp ? amp + 1 : NULL;
-    }
-    return 0;
-}
 
 /* ---------- model context ---------- */
 const char *mdl_type_str(ProMdlType t)
@@ -194,29 +81,6 @@ static const char *mdl_ext(ProMdlType t)
     }
 }
 
-int q_get_dec(const Query *q, const char *key, char *buf, int bufsz)
-{
-    char *raw = (char *)malloc(bufsz * 3 + 8);
-    int found, i, o = 0;
-    if (!raw) return 0;
-    found = q_get(q, key, raw, bufsz * 3);
-    if (found) {
-        for (i = 0; raw[i] && o < bufsz - 1; i++) {
-            if (raw[i] == '%' && isxdigit((unsigned char)raw[i + 1]) && isxdigit((unsigned char)raw[i + 2])) {
-                char h[3] = { raw[i + 1], raw[i + 2], 0 };
-                buf[o++] = (char)strtol(h, NULL, 16);
-                i += 2;
-            } else if (raw[i] == '+') {
-                buf[o++] = ' ';
-            } else {
-                buf[o++] = raw[i];
-            }
-        }
-        buf[o] = 0;
-    }
-    free(raw);
-    return found;
-}
 
 int ctx_load(Ctx *c)
 {

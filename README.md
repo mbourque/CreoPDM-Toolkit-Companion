@@ -177,6 +177,28 @@ The service binds **127.0.0.1 only**. `GET` and `POST` are equivalent. Every res
 - Response: `{ok, fileName, type, window, alreadyOpen, loadedFromDisk}`, or `{ok:false, error}` (for example `could not display <file> in a window (Toolkit error N)`, which is what Creo returns if its open-window limit is reached).
 - It is meant to be called by the CreoPDM agent (after it has downloaded the file to a local folder), not by a web page.
 
+### Non-ASCII names (UTF-8 rules)
+Everything the service sends is **UTF-8**: JSON bodies (`Content-Type: application/json; charset=utf-8` on every response), log lines and URLs. Model names, parameter values, feature names and paths with characters such as `é`, `ü` or CJK come out as proper UTF-8.
+- Creo's UTF-16 strings are converted only with `WideCharToMultiByte(CP_UTF8)` (`w2u`). Case folding and character tests on those bytes are **ASCII-only** (`lower_ascii`, `upper_ascii`, ...); the C library's `tolower` / `isalnum` / `isxdigit` are locale-dependent and, in a Windows-1252 locale (which a host process like Creo can set), rewrite UTF-8 bytes such as `0xC3` into invalid sequences. That is what produced invalid JSON for a model called `café.prt` (`toolkit_bad_json` in the agent).
+- The JSON writer escapes quotes, backslashes (Windows paths) and control characters, writes valid non-ASCII characters as raw UTF-8, and writes any invalid byte as `\ufffd`, so a client can always decode a response as UTF-8.
+- Request values (`fileName=`, `path=`, `url=`) are percent-decoded to bytes and must be valid UTF-8 (`café.prt` -> `caf%C3%A9.prt`). Invalid UTF-8 is rejected with a clear error instead of being guessed. `CREOPDM_URL` and `CREOPDM_EXPLORER_URL` are read as wide environment strings. The log file is opened with a wide path, so a TEMP folder under a non-ASCII user name works.
+- `w2u` into a too-small buffer truncates on a character boundary instead of returning an empty string.
+
+**Automated check (no Creo needed):** `tests\run_utf8_test.bat` builds `tests\utf8_test.c` against `src\textutil.c`, switches the C locale to Windows-1252 and verifies the points above (it also shows the old `tolower` corrupting UTF-8). It needs only Visual Studio's C compiler.
+
+**Manual check in Creo** (model named `café.prt` active):
+```powershell
+$r = Invoke-WebRequest http://127.0.0.1:8767/health
+$r.Headers['Content-Type']                       # application/json; charset=utf-8
+($r.Content | ConvertFrom-Json).model.fileName   # café.prt  (a proper é)
+# the same check the agent does:
+curl.exe -s http://127.0.0.1:8767/health | python -c "import sys,json; json.loads(sys.stdin.buffer.read().decode('utf-8')); print('valid UTF-8 JSON')"
+# round trip a non-ASCII name, parameter value and path through /collect (open or retrieve café.prt first):
+$u = "http://127.0.0.1:8767/collect?domains=identity,parameters&fileName=caf%C3%A9.prt&path=" + [uri]::EscapeDataString("C:\models\café\café.prt")
+(Invoke-WebRequest $u).Content | ConvertFrom-Json
+```
+Expected: `identity.file_name` is `café.prt`, any parameter value containing `é` shows it intact, and nothing decodes as `?` or mojibake.
+
 ### Quick test matrix
 With Creo running and an appropriate model active:
 ```powershell
@@ -310,7 +332,8 @@ A harness model cannot be opened on its own in Creo ("open the cabling assembly 
 | `src/main.c` | `user_initialize` / `user_terminate`, the CreoPDM ribbon commands (CreoPDM and CreoPDM Browse) |
 | `src/http_server.c` | the 127.0.0.1 server, worker thread, main-thread marshalling |
 | `src/router.c` | path -> collector table, `/health`, `/model`, `/collect`, `/open`, targeting and silent retrieve, timings |
-| `src/common.c/.h` | string builder, JSON writer, logging, model context |
+| `src/textutil.c/.h` | string builder, JSON writer, UTF-8/UTF-16 conversion, ASCII helpers, query parsing (no Toolkit dependency; unit-tested) |
+| `src/common.c/.h` | logging, error envelopes, model context |
 | `src/structure.c` | component walker (shared by structure, BOM, constraints, mass) and `/structure` |
 | `src/model.c` | identity, units, parameters, mass, materials |
 | `src/features.c` | features (with group nesting) and relations |

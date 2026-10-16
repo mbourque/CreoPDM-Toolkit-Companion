@@ -17,18 +17,6 @@
    The tab itself is laid out in Creo
    (File > Options > Customize Ribbon > TOOLKIT Commands) and saved to toolkitribbonui.rbn. */
 
-static void url_encode(const char *in, char *out, size_t outsz)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    size_t o = 0;
-    for (; *in && o + 4 < outsz; ++in) {
-        unsigned char c = (unsigned char)*in;
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') out[o++] = (char)c;
-        else { out[o++] = '%'; out[o++] = hex[c >> 4]; out[o++] = hex[c & 15]; }
-    }
-    out[o] = 0;
-}
-
 /* "CreoPDM": the full web UI in the embedded browser, widened */
 static ProError act_app(uiCmdCmdId command, uiCmdValue *value, void *data)
 {
@@ -37,10 +25,10 @@ static ProError act_app(uiCmdCmdId command, uiCmdValue *value, void *data)
     double percent = 50.0;
     int win = 0;
     ProError rc, rs;
-    DWORD n = GetEnvironmentVariableA("CREOPDM_URL", url, sizeof url);
+    int have_url = getenv_utf8("CREOPDM_URL", url, sizeof url) && url[0];
     (void)command; (void)value; (void)data;
 
-    if (n == 0 || n >= sizeof url) {
+    if (!have_url) {
         ProMessageDisplay(MSGFILE, "CPDM_NO_URL");
         logf_("CreoPDM: CREOPDM_URL is not set");
         return PRO_TK_NO_ERROR;
@@ -50,7 +38,7 @@ static ProError act_app(uiCmdCmdId command, uiCmdValue *value, void *data)
         if (p >= 10.0 && p <= 95.0) percent = p;
         else logf_("CreoPDM: ignoring CREOPDM_BROWSER_PERCENT '%s' (use 10..95)", pct);
     }
-    MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1024);
+    if (!u2w(url, wurl, 1024)) { logf_("CreoPDM: CREOPDM_URL is not valid text"); ProMessageDisplay(MSGFILE, "CPDM_APP_FAIL"); return PRO_TK_NO_ERROR; }
 
     rc = ProWindowCurrentGet(&win);
     if (rc == PRO_TK_NO_ERROR) rc = ProWindowURLShow(win, wurl);          /* load the page in the embedded browser */
@@ -72,13 +60,10 @@ static ProError act_browse(uiCmdCmdId command, uiCmdValue *value, void *data)
     size_t bl;
     Ctx c;
     ProError rc;
-    DWORD n;
     (void)command; (void)value; (void)data;
 
-    n = GetEnvironmentVariableA("CREOPDM_EXPLORER_URL", base, sizeof base);
-    if (n == 0 || n >= sizeof base) {                       /* default: CREOPDM_URL + "embed/explorer" */
-        n = GetEnvironmentVariableA("CREOPDM_URL", base, sizeof base - 32);
-        if (n == 0 || n >= sizeof base - 32) {
+    if (!getenv_utf8("CREOPDM_EXPLORER_URL", base, sizeof base) || !base[0]) {                 /* default: CREOPDM_URL + "embed/explorer" */
+        if (!getenv_utf8("CREOPDM_URL", base, sizeof base - 32) || !base[0]) {
             ProMessageDisplay(MSGFILE, "CPDM_NO_URL");
             logf_("Browse: CREOPDM_URL / CREOPDM_EXPLORER_URL is not set");
             return PRO_TK_NO_ERROR;
@@ -109,7 +94,7 @@ static ProError act_browse(uiCmdCmdId command, uiCmdValue *value, void *data)
     }
     _snprintf(url, sizeof url, "%s%s", base, q);
     url[sizeof url - 1] = 0;
-    MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 2048);
+    if (!u2w(url, wurl, 2048)) { logf_("Browse: the explorer address is not valid text"); ProMessageDisplay(MSGFILE, "CPDM_BROWSE_FAIL"); return PRO_TK_NO_ERROR; }
 
     if (!g_pane_added) {
         rc = ProNavigatorpaneBrowserAdd((char *)"CreoPDM", NULL, wurl);

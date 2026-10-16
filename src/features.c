@@ -77,7 +77,7 @@ static ProError feat_row(ProFeature *feat, ProError status, ProAppData data)
     if (!r->type[0]) sprintf(r->type, "FEATTYPE_%d", (int)ft);
     else {                                   /* "Datum Plane" -> "DATUM_PLANE" */
         char *t;
-        for (t = r->type; *t; ++t) *t = (*t == ' ') ? '_' : (char)toupper((unsigned char)*t);
+        for (t = r->type; *t; ++t) *t = (*t == ' ') ? '_' : (*t >= 'a' && *t <= 'z') ? (char)(*t - 32) : *t;   /* ASCII-only upper-casing */
     }
     sub[0] = 0;
     if (ProFeatureSubtypeGet(feat, sub) == PRO_TK_NO_ERROR) w2u(sub, r->subtype, sizeof r->subtype);
