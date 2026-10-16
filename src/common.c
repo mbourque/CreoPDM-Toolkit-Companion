@@ -105,7 +105,7 @@ int ctx_for_model(Ctx *c, ProMdl mdl)
     if (u[0]) {
         _snprintf(c->fileName, sizeof c->fileName, "%s%s", u, mdl_ext(c->type));
         c->fileName[sizeof c->fileName - 1] = 0;
-        lower_ascii(c->fileName);
+        lower_utf8(c->fileName, sizeof c->fileName);
     }   /* else fileName stays empty: caller may fall back to the requested tip */
     c->typeStr = mdl_type_str(c->type);
     c->has = 1;
@@ -123,7 +123,7 @@ void ctx_fallback_name(Ctx *c, const char *requested)
     if (c->has && !c->fileName[0] && requested && requested[0]) {
         strncpy(c->fileName, requested, sizeof c->fileName - 1);
         c->fileName[sizeof c->fileName - 1] = 0;
-        lower_ascii(c->fileName);
+        lower_utf8(c->fileName, sizeof c->fileName);
     }
 }
 /* True if the file header says this is a cabling harness part ("#UGC:2 PART/HARNESS_PART ...").

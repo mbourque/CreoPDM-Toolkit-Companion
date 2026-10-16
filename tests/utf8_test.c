@@ -96,6 +96,31 @@ int main(void)
       w2u(lw, buf, 11);
       CHECK(buf[0] != 0 && os_valid_utf8(buf) && strlen(buf) == 10, "w2u into a 11-byte buffer keeps 5 whole characters (valid UTF-8)"); }
 
+    /* 9. Creo stores names upper-case ("CAFE" with U+00C9); the file on disk is lower-case (U+00E9) */
+    { wchar_t creo[] = L"CAFÉ";
+      w2u(creo, buf, sizeof buf);                                       /* bytes 43 41 46 C3 89 */
+      CHECK((unsigned char)buf[3] == 0xC3 && (unsigned char)buf[4] == 0x89, "Creo's upper-case name converts to UTF-8 C3 89 (U+00C9)");
+      strcat(buf, ".PRT");
+      lower_utf8(buf, sizeof buf);
+      CHECK(strcmp(buf, cafe_u8) == 0, "lower_utf8(\"CAF\\xC3\\x89.PRT\") == \"caf\\xC3\\xA9.prt\" (e-acute bytes C3 A9, no substitute char)");
+      CHECK(strchr(buf, '_') == NULL, "no underscore appears in the converted name"); }
+    { const char cjk[] = "\xE9\x83\xA8\xE5\x93\x81.prt";                 /* the two characters of the Japanese word for part, + ".prt" */
+      wchar_t cw[] = L"部品.PRT";
+      w2u(cw, buf, sizeof buf);
+      CHECK(strncmp(buf, cjk, 6) == 0 && os_valid_utf8(buf), "w2u of the CJK name gives E9 83 A8 E5 93 81 (valid UTF-8)");
+      lower_utf8(buf, sizeof buf);
+      CHECK(strcmp(buf, cjk) == 0, "lower_utf8 keeps the CJK name intact and lower-cases only the ASCII extension");
+      jw_init(&jw, &sb);
+      jw_obj(&jw, NULL); jw_str(&jw, "fileName", buf); jw_end_obj(&jw);
+      CHECK(os_valid_utf8(sb.p) && strstr(sb.p, cjk) != NULL, "JSON carries the CJK name as raw UTF-8");
+      sb_free(&sb); }
+    { char mixed[] = "\xC3\x89" "COLE.PRT";                              /* E-acute + "COLE" */
+      lower_utf8(mixed, sizeof mixed);
+      CHECK(strcmp(mixed, "\xC3\xA9" "cole.prt") == 0, "lower_utf8 lower-cases a leading non-ASCII capital too");
+      strcpy(buf, "caf\xE9.PRT");                                        /* invalid UTF-8 must not be 'repaired' by guessing */
+      lower_utf8(buf, sizeof buf);
+      CHECK(strcmp(buf, "caf\xE9.prt") == 0, "lower_utf8 on invalid UTF-8 changes only ASCII letters (no substitution, no underscore)"); }
+
     printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "ALL PASSED", g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;
 }

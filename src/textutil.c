@@ -245,3 +245,21 @@ void url_encode(const char *in, char *out, size_t outsz)
     }
     out[o] = 0;
 }
+
+/* Unicode lower-casing of a UTF-8 string in place. Uses the Windows invariant locale (LOCALE_NAME_INVARIANT), so the result
+   does not depend on the process locale. Creo stores model names upper-case ("CAFE" with E-acute U+00C9); the file on disk
+   is "caf" + U+00E9, so non-ASCII letters have to be lower-cased too. cap = size of the buffer holding s. */
+void lower_utf8(char *s, size_t cap)
+{
+    wchar_t w[1024], lw[1024];
+    int n;
+    const unsigned char *p;
+    int ascii_only = 1;
+    for (p = (const unsigned char *)s; *p; ++p) if (*p >= 0x80) { ascii_only = 0; break; }
+    if (ascii_only) { lower_ascii(s); return; }
+    if (!utf8_valid(s) || strlen(s) >= 1000) { lower_ascii(s); return; }       /* never guess on bad input */
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, w, 1024) <= 0) { lower_ascii(s); return; }
+    n = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, w, -1, lw, 1024, NULL, NULL, 0);
+    if (n <= 0) { lower_ascii(s); return; }
+    w2u(lw, s, (int)cap);
+}

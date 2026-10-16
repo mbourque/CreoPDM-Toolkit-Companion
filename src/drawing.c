@@ -247,7 +247,7 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
         w2u(on, owner, sizeof owner);
         if (ProMdlTypeGet((ProMdl)dim->owner, &ot) == PRO_TK_NO_ERROR)
             strcat(owner, ot == PRO_MDL_DRAWING ? ".drw" : ot == PRO_MDL_ASSEMBLY ? ".asm" : ".prt");
-        lower_ascii(owner);
+        lower_utf8(owner, sizeof owner);
     }
     nameU[0] = symU[0] = 0;
     if (ProModelitemNameGet((ProModelitem *)dim, nm) == PRO_TK_NO_ERROR) w2u(nm, nameU, sizeof nameU);
@@ -290,7 +290,7 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
             w2u(on, units_model, sizeof units_model);
             if (ProMdlTypeGet(um, &ut) == PRO_TK_NO_ERROR)
                 strcat(units_model, ut == PRO_MDL_ASSEMBLY ? ".asm" : ".prt");
-            lower_ascii(units_model);
+            lower_utf8(units_model, sizeof units_model);
             length_unit_of_mdl(um, unit, sizeof unit);
         }
         basis = unit[0] ? "owner_model" : "unresolved";
@@ -517,7 +517,7 @@ void collect_drawing(Sb *out, const Ctx *c, const Query *q)
                 w2u(mn, b, sizeof b);
                 _snprintf(sub, sizeof sub, "%s", b);
                 sub[sizeof sub - 1] = 0;
-                lower_ascii(sub);
+                lower_utf8(sub, sizeof sub);
             }
             d.w = row_jw(&d, sheet);
             jw_obj(d.w, NULL);

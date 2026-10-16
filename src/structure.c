@@ -132,7 +132,7 @@ static void emit_one_harness(WalkCtx *wc, ProMdl h)
     w2u(hn, base, sizeof base);
     _snprintf(ci.file, sizeof ci.file, "%s.prt", base);
     ci.file[sizeof ci.file - 1] = 0;
-    lower_ascii(ci.file);
+    lower_utf8(ci.file, sizeof ci.file);
     ci.kind = "HARNESS";
     ci.harness = 1;
     ci.skel = 0;
@@ -230,7 +230,7 @@ static ProError w_visit(ProFeature *feat, ProError status, ProAppData data)
     w2u(mname, base, sizeof base);
     _snprintf(ci.file, sizeof ci.file, "%s%s", base, mtype == PRO_MDL_ASSEMBLY ? ".asm" : ".prt");
     ci.file[sizeof ci.file - 1] = 0;
-    lower_ascii(ci.file);
+    lower_utf8(ci.file, sizeof ci.file);
 
     if (mdl && wc->ne < MAX_EMIT) wc->emitted[wc->ne++] = mdl;
 

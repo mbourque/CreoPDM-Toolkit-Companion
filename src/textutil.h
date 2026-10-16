@@ -51,6 +51,7 @@ int  getenv_utf8(const char *name, char *out, int outsz);   /* wide environment 
 
 /* ---------- ASCII-only helpers (locale independent) ---------- */
 void lower_ascii(char *s);
+void lower_utf8(char *s, size_t cap);   /* Unicode lower-casing of a UTF-8 string in place (invariant locale, NOT the process locale): "CAFÉ" -> "café" */
 void upper_ascii(char *s);
 int  ascii_alnum(int c);
 int  ascii_xdigit(int c);

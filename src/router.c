@@ -205,7 +205,7 @@ static int parse_file_name(const char *fn, ProMdlName base, ProMdlfileType *ft)
     size_t n = strlen(fn);
     if (n == 0 || n >= sizeof tmp) return 0;
     strcpy(tmp, fn);
-    lower_ascii(tmp);
+    lower_utf8(tmp, sizeof tmp);
     /* strip a trailing .N version */
     end = tmp + strlen(tmp);
     dot = strrchr(tmp, '.');
@@ -311,7 +311,7 @@ static void harness_identity(Sb *r, const char *fn, const char *full)
     char tip[300];
     strncpy(tip, fn, sizeof tip - 1);
     tip[sizeof tip - 1] = 0;
-    lower_ascii(tip);
+    lower_utf8(tip, sizeof tip);
     jw_init(&w, r);
     jw_obj(&w, NULL);
     jw_bool(&w, "ok", 1);
@@ -379,7 +379,7 @@ static int route_harness(const char *path, const Query *q, const char *fn, const
         char tip[300];
         strncpy(tip, fn, sizeof tip - 1);
         tip[sizeof tip - 1] = 0;
-        lower_ascii(tip);
+        lower_utf8(tip, sizeof tip);
         jw_init(&w, out);
         jw_obj(&w, NULL);
         jw_bool(&w, "ok", 1);
