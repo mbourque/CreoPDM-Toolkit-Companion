@@ -1,20 +1,44 @@
-CPDM_LABEL
-CreoPDM Structure Export
-#
-#
-CPDM_HELP
-Export top-level assembly components to JSON
-#
-#
-CPDM_DESC
-Writes the active assembly components to CREOPDM_STRUCTURE_OUT as JSON
-#
-#
 CPDM_HTTP_UP
 CreoPDM Structure: HTTP listening on 127.0.0.1.
 #
 #
 CPDM_HTTP_FAIL
-CreoPDM Structure: HTTP not started (see creopdm_structure.log in TEMP). Ribbon command still works.
+CreoPDM Structure: HTTP not started (see creopdm_toolkit.log in TEMP).
+#
+#
+CPDM_BROWSE_LABEL
+CreoPDM Browse
+#
+#
+CPDM_BROWSE_HELP
+Show the current CreoPDM product files in a navigator pane
+#
+#
+CPDM_BROWSE_DESC
+Shows the compact CreoPDM file explorer for the current product in a Creo navigator pane (address from CREOPDM_EXPLORER_URL, or CREOPDM_URL)
+#
+#
+CPDM_NO_URL
+CreoPDM: set the CREOPDM_URL environment variable to your CreoPDM address, then restart Creo.
+#
+#
+CPDM_BROWSE_FAIL
+CreoPDM: could not open the file explorer pane (see creopdm_toolkit.log in TEMP).
+#
+#
+CPDM_APP_LABEL
+CreoPDM
+#
+#
+CPDM_APP_HELP
+Open CreoPDM in the Creo embedded browser
+#
+#
+CPDM_APP_DESC
+Opens the full CreoPDM web UI (address from the CREOPDM_URL environment variable) in the Creo embedded browser
+#
+#
+CPDM_APP_FAIL
+CreoPDM: could not open CreoPDM in the embedded browser (see creopdm_toolkit.log in TEMP).
 #
 #

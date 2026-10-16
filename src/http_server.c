@@ -202,8 +202,7 @@ int http_start(void)
     addr.sin_port = htons((u_short)port);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);          /* 127.0.0.1 ONLY */
     if (bind(g_listen, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(g_listen, 4) != 0) {
-        logf_("HTTP not started: cannot bind 127.0.0.1:%d (WSA error %d; port in use?). "
-              "Ribbon command still works.", port, WSAGetLastError());
+        logf_("HTTP not started: cannot bind 127.0.0.1:%d (WSA error %d; port in use?).", port, WSAGetLastError());
         closesocket(g_listen);
         g_listen = INVALID_SOCKET;
         return 0;

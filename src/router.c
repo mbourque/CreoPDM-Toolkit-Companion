@@ -1,5 +1,6 @@
 /* router.c - maps paths to collectors; /health and /collect. Runs on Creo's main thread. */
 #include "common.h"
+#include <ProWindows.h>
 
 #define M_P 1
 #define M_A 2
@@ -389,6 +390,142 @@ static int route_harness(const char *path, const Query *q, const char *fn, const
     return 200;
 }
 
+/* ---------- /open: open a model from disk in a Creo window (used by the CreoPDM explorer via the agent) ----------
+   GET /open?fileName=<name.ext[.N]>&path=<absolute path to the file>
+   Loads the model silently if it is not in session (same resolve as /collect: harness / not-found errors apply), then
+   shows it the way File > Open does: a new window, made active. If the model is already shown in a window, that window
+   is activated instead (no duplicate tabs). The model is NOT erased afterwards. */
+static int do_open(const Query *q, Sb *out)
+{
+    char fn[300], pth[1600], emsg[400];
+    ProMdl target = NULL;
+    int retrieved = 0, win = 0, already = 0;
+    ProMdlName nm;
+    Ctx c;
+    ProError rc;
+    Jw w;
+
+    fn[0] = pth[0] = 0;
+    q_get_dec(q, "fileName", fn, sizeof fn);
+    q_get_dec(q, "path", pth, sizeof pth);
+    if (!fn[0] && pth[0]) {                         /* derive the tip from the path */
+        const char *s = strrchr(pth, 92);              /* backslash */
+        const char *s2 = strrchr(pth, '/');
+        if (s2 > s) s = s2;
+        strncpy(fn, s ? s + 1 : pth, sizeof fn - 1);
+        fn[sizeof fn - 1] = 0;
+    }
+    if (!fn[0]) { emit_error(out, "pass fileName= and/or path= to open a model"); return 200; }
+
+    if (!resolve_target(fn, pth, &target, &retrieved, emsg, sizeof emsg)) { emit_error(out, emsg); return 200; }
+    ctx_for_model(&c, target);
+    if (!c.has) { emit_errorf(out, "model handle for %s is not usable", fn); return 200; }
+
+    if (ProMdlWindowGet(target, &win) == PRO_TK_NO_ERROR && win > 0) {
+        already = 1;                                 /* already displayed: just bring it forward */
+        rc = ProWindowActivate(win);
+    } else if (ProMdlMdlnameGet(target, nm) != PRO_TK_NO_ERROR) {
+        rc = PRO_TK_GENERAL_ERROR;
+    } else {
+        rc = ProObjectwindowMdlnameCreate(nm, (ProType)c.type, &win);   /* new window, like File > Open */
+        if (rc == PRO_TK_NO_ERROR) rc = ProWindowActivate(win);
+        if (rc == PRO_TK_NO_ERROR) rc = ProMdlDisplay(target);
+    }
+    logf_("/open %s retrieved=%d already=%d window=%d -> %d", c.fileName, retrieved, already, win, (int)rc);
+    if (rc != PRO_TK_NO_ERROR) {
+        emit_errorf(out, "could not display %s in a window (Toolkit error %d)", c.fileName, (int)rc);
+        return 200;
+    }
+
+    jw_init(&w, out);
+    jw_obj(&w, NULL);
+    jw_bool(&w, "ok", 1);
+    jw_str(&w, "fileName", c.fileName);
+    jw_str(&w, "type", c.typeStr);
+    jw_int(&w, "window", win);
+    jw_bool(&w, "alreadyOpen", already);
+    jw_bool(&w, "loadedFromDisk", retrieved);
+    jw_end_obj(&w);
+    sb_puts(out, "\n");
+    return 200;
+}
+
+/* ---------- /url: load an address in Creo's main embedded browser (not the navigator pane) ----------
+   GET /url?url=<absolute http(s) URL, percent-encoded>[&percent=10..95]
+   Uses ProWindowURLShow on the current window. Safety: only http/https; if CREOPDM_URL is set the address must be on
+   the same scheme://host:port. The browser is widened to `percent` of the window (default env CREOPDM_BROWSER_PERCENT or 50)
+   only if it is currently narrower; it is never shrunk. */
+static void origin_of(const char *url, char *out, size_t outsz)
+{
+    const char *p = strstr(url, "://");
+    size_t n = 0;
+    out[0] = 0;
+    if (!p) return;
+    p += 3;
+    n = (size_t)(p - url);
+    while (p[0] && p[0] != '/' && p[0] != '?' && p[0] != '#') p++;
+    n = (size_t)(p - url);
+    if (n >= outsz) n = outsz - 1;
+    memcpy(out, url, n);
+    out[n] = 0;
+    lower_ascii(out);
+}
+
+static int do_url(const Query *q, Sb *out)
+{
+    char url[1600], pct[16], cfg[1100], o1[400], o2[400];
+    wchar_t wurl[1600];
+    double target = 50.0, cur = 0.0;
+    int win = 0, widened = 0;
+    ProError rc;
+    Jw w;
+
+    url[0] = 0;
+    q_get_dec(q, "url", url, sizeof url);
+    if (!url[0]) { emit_error(out, "pass url=<absolute http(s) address, percent-encoded>"); return 200; }
+    if (_strnicmp(url, "http://", 7) != 0 && _strnicmp(url, "https://", 8) != 0) {
+        emit_error(out, "url must start with http:// or https://");
+        return 200;
+    }
+    if (GetEnvironmentVariableA("CREOPDM_URL", cfg, sizeof cfg) > 0 && cfg[0]) {     /* same origin as CreoPDM */
+        origin_of(url, o1, sizeof o1);
+        origin_of(cfg, o2, sizeof o2);
+        if (strcmp(o1, o2) != 0) {
+            emit_errorf(out, "url must be on the configured CreoPDM address (%s)", o2);
+            return 200;
+        }
+    }
+    if (GetEnvironmentVariableA("CREOPDM_BROWSER_PERCENT", pct, sizeof pct) > 0) {
+        double p = atof(pct);
+        if (p >= 10.0 && p <= 95.0) target = p;
+    }
+    if (q_get(q, "percent", pct, sizeof pct)) {
+        double p = atof(pct);
+        if (p >= 10.0 && p <= 95.0) target = p;
+    }
+
+    MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 1600);
+    rc = ProWindowCurrentGet(&win);
+    if (rc == PRO_TK_NO_ERROR) rc = ProWindowURLShow(win, wurl);
+    logf_("/url %s -> %d (window %d)", url, (int)rc, win);
+    if (rc != PRO_TK_NO_ERROR) {
+        emit_errorf(out, "could not load the address in Creo's browser (Toolkit error %d)", (int)rc);
+        return 200;
+    }
+    if (ProWindowBrowserSizeGet(win, &cur) != PRO_TK_NO_ERROR || cur < target)       /* widen, never shrink */
+        widened = (ProWindowBrowserSizeSet(win, target) == PRO_TK_NO_ERROR);
+
+    jw_init(&w, out);
+    jw_obj(&w, NULL);
+    jw_bool(&w, "ok", 1);
+    jw_str(&w, "url", url);
+    jw_int(&w, "window", win);
+    jw_bool(&w, "widened", widened);
+    jw_end_obj(&w);
+    sb_puts(out, "\n");
+    return 200;
+}
+
 int route_request(const char *method, const char *path, const char *query, Sb *out)
 {
     Ctx c;
@@ -422,6 +559,8 @@ int route_request(const char *method, const char *path, const char *query, Sb *o
         return 200;
     }
 
+    if (strcmp(path, "/open") == 0) return do_open(&q, out);   /* needs no active model */
+    if (strcmp(path, "/url") == 0) return do_url(&q, out);     /* needs no active model */
     if (strcmp(path, "/collect") != 0 && !((path[0] == '/') && find_domain(path + 1))) {
         emit_error(out, "not found");
         return 404;

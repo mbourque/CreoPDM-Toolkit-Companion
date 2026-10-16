@@ -61,7 +61,6 @@ If you copy a newer `creopdm_structure.dll` over an old one later, close Creo fi
   ```
   should return `{"ok": true, "service": "creopdm-toolkit", "version": "...", "model": ...}` (`model` is the active model, or `null` if none is open).
 - Log file: `%TEMP%\creopdm_toolkit.log`.
-- Optional ribbon button: File > Options > Customize Ribbon > choose commands from "All Commands" > "CreoPDM Structure Export" (writes the structure JSON to `%TEMP%\creopdm_structure.json`, or the path in `CREOPDM_STRUCTURE_OUT`). The HTTP service does not need it.
 
 **Settings** are environment variables, set before Creo starts:
 
@@ -69,15 +68,39 @@ If you copy a newer `creopdm_structure.dll` over an old one later, close Creo fi
 |---|---|---|
 | `CREOPDM_TOOLKIT_PORT` | `8767` | Port on `127.0.0.1` (the older name `CREOPDM_STRUCTURE_PORT` is still honoured). |
 | `CREOPDM_TOOLKIT_TIMEOUT_MS` | `30000` | How long a request waits for Creo's main thread. |
+| `CREOPDM_URL` | (none) | Address of your CreoPDM web UI, used by the experimental **CreoPDM** and **CreoPDM Browse** commands (see [ribbon tab](#creopdm-ribbon-tab-experimental)). |
+| `CREOPDM_EXPLORER_URL` | `CREOPDM_URL` + `embed/explorer` | Address of the compact file-explorer page shown by **CreoPDM Browse**. |
+| `CREOPDM_BROWSER_PERCENT` | `50` | How much of the Creo window the embedded browser covers after the **CreoPDM** command (10 to 95). |
 
 ### Troubleshooting
 | Symptom | Likely cause / fix |
 |---|---|
 | Creo says the app "was not unlocked before distribution", or "Startup of application … failed" | The DLL is not unlocked (a locally rebuilt DLL must be unlocked, see [Build](#build-from-source-optional)). Also check the DLL path in `protk.dat`. |
 | Nothing happens at startup, no message line | Check the `protkdat` line path, the `EXEC_FILE` / `TEXT_DIR` paths in `protk.dat`, and that the `config.pro` you edited is one Creo actually reads. |
-| Message line says HTTP not started | Port 8767 is in use (see the log). Set `CREOPDM_TOOLKIT_PORT` to another port. The ribbon command still works. |
+| Message line says HTTP not started | Port 8767 is in use (see the log). Set `CREOPDM_TOOLKIT_PORT` to another port. |
 | `/health` works but a model call returns `ProMdlFiletypeLoad=-1` | Creo could not open the file. For example it was saved in a newer Creo release than the one running (an older Creo cannot open newer files). |
 | Replacing or rebuilding the DLL fails with `cannot open file 'bin\creopdm_structure.dll'` | Creo has the DLL loaded; close Creo first. |
+
+---
+
+## CreoPDM ribbon tab (experimental)
+The app registers commands you can place in a **CreoPDM** tab of Creo's ribbon:
+
+| Command | Does today |
+|---|---|
+| **CreoPDM** | Shows the full CreoPDM web UI in Creo's **embedded browser** and sets how much of the Creo window it covers (`CREOPDM_BROWSER_PERCENT`, default 50). The address comes from the `CREOPDM_URL` environment variable (set it before starting Creo, e.g. `http://localhost:8000/`). If it is not set, the message line says so. |
+| **CreoPDM Browse** | Shows a compact **file explorer for the current product** in a Creo **navigator pane** (the narrow panel beside the model tree). The page is `CREOPDM_EXPLORER_URL`, or `CREOPDM_URL` + `embed/explorer`; the active model is passed as context (`?file=<name>&folder=<folder>`) so CreoPDM can choose the product. This needs that explorer page to exist in CreoPDM (CreoPDM provides `/embed/explorer`). A second click reloads the pane with the current model as context. Opening a file from that page goes through the CreoPDM agent and the `/open` call below; the browser never calls this service directly. |
+
+This is a first experiment. Both commands write their result codes to the log file creopdm_toolkit.log in your TEMP folder (`ProWindowURLShow` / `ProWindowBrowserSizeSet` for CreoPDM; `ProNavigatorpaneBrowserAdd` / `ProNavigatorpaneBrowserURLSet` for Browse). The width setting applies to the embedded browser only, not to the navigator pane (Creo has no control for the navigator's width), and not if Creo shows its browser in a separate window. After adding a new command, put it in the tab (step 3 below) and save the layout again.
+
+**Lay out the tab** (Creo's standard Toolkit ribbon workflow; needs a Toolkit development license to save):
+1. Start Creo with the app loaded, open the mode you want the tab in (Part, Assembly, Drawing, ...).
+2. File > Options > **Customize Ribbon**. In the "Customize the Ribbon" list create a **new tab** named CreoPDM and a group in it.
+3. Set "Choose commands from" to **TOOLKIT Commands**, select the CreoPDM commands and **Add** them to the group.
+4. **Import/Export > Save the Auxiliary Application User Interface.** Creo writes `toolkitribbonui.rbn` into the app's `text\` folder (the `TEXT_DIR` in `protk.dat`).
+5. Click Apply/OK and restart Creo. The tab loads automatically together with the app.
+
+Notes: the layout is saved **per Creo mode** (repeat in each mode where the tab should show); only new tabs and groups can be added, not Creo's own; the `.rbn` file is generated by Creo and cannot be edited by hand. Commit the saved `toolkitribbonui.rbn` (it sits beside `text\usascii`) and it ships with the app. A file with another name can be placed in `text\ribbon\` and loaded by the app with `ProRibbonDefinitionfileLoad`.
 
 ---
 
@@ -116,6 +139,8 @@ The service binds **127.0.0.1 only**. `GET` and `POST` are equivalent. Every res
 | `/drawing` | | | | x | `{ok, fileName, partial, partial_missing[], sheetCount, viewCount, noteCount, dimensionCount, tableCount, features:[...]}`; `?cells=1` adds table cell text |
 | `/mfg` | | | x | | `{ok, fileName, mfg_type, partial, partial_missing[], modelCount, featureCount, models[], features[]}` |
 | `/harness-probe` | | x | | | diagnostic dump of what Toolkit knows about harnesses (see [Harness](#cabling-harnesses)) |
+| `/open?fileName=&path=` | x | x | x | x | Opens a model from disk **in a Creo window** (see [Open](#open-a-model-in-creo)): `{ok, fileName, type, window, alreadyOpen, loadedFromDisk}` |
+| `/url?url=` | | | | | Loads an address in Creo's **main embedded browser** (see [Load a URL](#load-a-url-in-the-embedded-browser)): `{ok, url, window, widened}` |
 | `/collect?domains=a,b` | x | x | x | x | `{ok, fileName, type, domains:{a:{...}, b:{...}}}` |
 
 **Mapping to CreoPDM's metadata fields:** take each endpoint's inner key: `parameters`, `mass`, `units`, `materials`, `identity`, `features`; `/structure` `.components` -> `structure`; `/bom` `.bom` -> `bom`; `relations`, `constraints` and `simp_reps` are the whole response. A parameter `value` is always a string (`"true"/"false"` for BOOLEAN); `units` is set only for DOUBLE.
@@ -137,6 +162,20 @@ The service binds **127.0.0.1 only**. `GET` and `POST` are equivalent. Every res
   ```powershell
   Invoke-RestMethod "http://127.0.0.1:8767/collect?domains=identity,features&fileName=base-plate.prt&path=C%3A%5Cmodels%5Cbase-plate.prt.4&keep=1"
   ```
+
+### Load a URL in the embedded browser
+`GET|POST /url?url=<absolute http(s) address, percent-encoded>[&percent=10..95]` loads the address in Creo's **main embedded browser** (`ProWindowURLShow` on the current window), not in the navigator pane. It is used to open a CreoPDM page (e.g. Details) from the explorer pane.
+- Only `http://` and `https://` addresses are accepted. If `CREOPDM_URL` is set, the address must be on the same scheme, host and port; this stops other local web pages from steering Creo's browser elsewhere.
+- The browser is widened to `percent` of the Creo window (default `CREOPDM_BROWSER_PERCENT`, else 50) only if it is currently narrower; it is never shrunk.
+- Response: `{ok, url, window, widened}` or `{ok:false, error}`. Loopback only, like the other endpoints.
+
+### Open a model in Creo
+`GET|POST /open?fileName=<name.ext[.N]>&path=<absolute path to the file>` (either parameter alone is enough; a missing `fileName` is taken from the end of `path`). Unlike `/collect`, this **does** show the model:
+- The file is loaded silently if it is not already in session (same checks as Collect: harness parts and missing files return the same `ok:false` messages).
+- Then it is displayed the way File > Open does: in a **new window**, which is activated. If the model is already shown in a window, that window is activated instead, so repeated Opens do not add tabs.
+- The model is **not** erased afterwards.
+- Response: `{ok, fileName, type, window, alreadyOpen, loadedFromDisk}`, or `{ok:false, error}` (for example `could not display <file> in a window (Toolkit error N)`, which is what Creo returns if its open-window limit is reached).
+- It is meant to be called by the CreoPDM agent (after it has downloaded the file to a local folder), not by a web page.
 
 ### Quick test matrix
 With Creo running and an appropriate model active:
@@ -268,9 +307,9 @@ A harness model cannot be opened on its own in Creo ("open the cabling assembly 
 ## Developer notes
 | File | Role |
 |---|---|
-| `src/main.c` | `user_initialize` / `user_terminate`, the ribbon command (`creopdm_structure_export`) |
+| `src/main.c` | `user_initialize` / `user_terminate`, the CreoPDM ribbon commands (CreoPDM and CreoPDM Browse) |
 | `src/http_server.c` | the 127.0.0.1 server, worker thread, main-thread marshalling |
-| `src/router.c` | path -> collector table, `/health`, `/model`, `/collect`, targeting and silent retrieve, timings |
+| `src/router.c` | path -> collector table, `/health`, `/model`, `/collect`, `/open`, targeting and silent retrieve, timings |
 | `src/common.c/.h` | string builder, JSON writer, logging, model context |
 | `src/structure.c` | component walker (shared by structure, BOM, constraints, mass) and `/structure` |
 | `src/model.c` | identity, units, parameters, mass, materials |
@@ -281,6 +320,6 @@ A harness model cannot be opened on its own in Creo ("open the cabling assembly 
 | `src/mfg.c` | MFG inventory |
 | `src/cabling.c` | harness probe |
 
-**Threading.** Toolkit is not thread-safe, so the HTTP worker thread never calls it. `user_initialize` runs on Creo's main thread and creates a hidden message-only window; each request is posted to it and executed in its window procedure through Creo's own message pump. Requests are handled one at a time, so work never overlaps. If the port is already in use, the server is skipped, the reason is logged, and the message line says so; the ribbon command still works.
+**Threading.** Toolkit is not thread-safe, so the HTTP worker thread never calls it. `user_initialize` runs on Creo's main thread and creates a hidden message-only window; each request is posted to it and executed in its window procedure through Creo's own message pump. Requests are handled one at a time, so work never overlaps. If the port is already in use, the server is skipped, the reason is logged, and the message line says so; the ribbon commands still work.
 
 **Add a domain.** Write `collect_x(Sb*, const Ctx*, const Query*)` and add one row to `DOMAINS[]` in `router.c`. It then gets its own `GET /x` and is available through `/collect?domains=x`.
