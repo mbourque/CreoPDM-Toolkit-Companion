@@ -4,6 +4,7 @@
  * status, suppressed, sheet, sheet_id, parent_id) plus type-specific extras.
  * Drawing-only APIs; models already in session are read, nothing is retrieved. */
 #include "common.h"
+#include <math.h>
 #include <ProDrawing.h>
 #include <ProDimension.h>
 #include <ProDtlnote.h>
@@ -51,6 +52,9 @@ typedef struct {
     int        dims;
     ProMdl     solids[MAX_SOLIDS];
     int        nsolids;
+    char       miss[60][200];       /* per-row read failures -> partial_missing */
+    int        nmiss;
+    int        miss_over;
 } DCtx;
 static Jw *row_jw(DCtx *d, int sheet) { return &d->sws[(sheet >= 1 && sheet <= d->nsheets) ? sheet : 0]; }static int row_level(int sheet, int lv) { return sheet > 0 ? lv : 1; }   /* sheetless rows are top level *//* append the rows bucketed for one sheet (a "[ ... ]" array text) to the outline array, keeping order */static void splice_bucket(Jw *out_w, DCtx *d, int idx){    Sb *b = &d->sbs[idx];    Jw *bw = &d->sws[idx];    if (!b->p) return;    jw_end_arr(bw);                         /* close the bucket array */    if (b->len > 2) {                       /* non-empty: strip the brackets and add the row list */        b->p[b->len - 1] = 0;        jw_raw(out_w, NULL, b->p + 1);    }}
 
@@ -225,7 +229,7 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
     ProBoolean disp = PRO_B_TRUE;
     ProView view;
     ProDimensiontype dt = PRODIMTYPE_UNKNOWN;
-    ProError trc;
+    ProError trc, vrc;
     const char *subtype, *basis;
     int type_known, units_assumed = 0;
     ProMdlName on;
@@ -262,7 +266,8 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
         /* No ordinate probe: ProDimensionIsOrdinate pulls in a license option we do not have. */
         subtype = (trc == PRO_TK_NO_ERROR) ? "OTHER" : "UNKNOWN";   /* raw id in type_id */
     }
-    has_val =(ProDimensionValueGet(dim, &val) == PRO_TK_NO_ERROR);
+    vrc = ProDimensionValueGet(dim, &val);
+    has_val = (vrc == PRO_TK_NO_ERROR);
     has_shown = (ProDimensionDisplayedValueGet(dim, &shown) == PRO_TK_NO_ERROR);
 
     if (ProDrawingDimensionViewGet(d->drw, dim, &view) == PRO_TK_NO_ERROR &&
@@ -317,7 +322,13 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
     sheet_ref(d->w, sheet);
     jw_str(d->w, "parent_id", par[0] ? par : NULL);
     jw_str(d->w, "view_id", has_view ? vS : NULL);
-    if (has_val) jw_dbl(d->w, "value", val); else jw_null(d->w, "value");
+    if (has_val) {
+        jw_dbl(d->w, "value", val);
+    } else {                                        /* could not read: leave value out (never 0 or null as a guess) and say so */
+        if (d->nmiss < 60) _snprintf(d->miss[d->nmiss++], sizeof d->miss[0], "dimension value (ProDimensionValueGet=%d) id %s", (int)vrc, idS);
+        else d->miss_over++;
+        d->miss[d->nmiss ? d->nmiss - 1 : 0][sizeof d->miss[0] - 1] = 0;
+    }
     jw_str(d->w, "units", unit[0] ? unit : NULL);   /* derived, see policy above */
     jw_str(d->w, "units_basis", basis);             /* angle | owner_model | unresolved (never the sheet unit) */
     jw_str(d->w, "units_model", units_model[0] ? units_model : NULL);   /* model whose unit was used */
@@ -326,6 +337,30 @@ static ProError dim_visit(ProDimension *dim, ProError status, ProAppData data)
     jw_str(d->w, "symbol", symU[0] ? symU : NULL);
     jw_str(d->w, "owner", owner[0] ? owner : NULL);
     jw_bool(d->w, "reference", dv->reference);
+    if (!dv->reference) {                           /* tolerance: only when the dimension has one (reference dims have none) */
+        ProDimToleranceType tt;
+        if (ProDimensionToltypeGet(dim, &tt) == PRO_TK_NO_ERROR && tt != PRO_TOL_DEFAULT) {
+            double up = 0.0, lo = 0.0;
+            if (ProDimensionToleranceGet(dim, &up, &lo) == PRO_TK_NO_ERROR) {
+                /* Toolkit returns the tolerance as offsets from the nominal (seen: a 15 dimension with LIMITS gives 1 and 1),
+                   so the limits are nominal -/+ offset; the raw offsets are kept for transparency. */
+                if (has_val) {
+                    jw_obj(d->w, "tolerance_limits");
+                    jw_dbl(d->w, "lower", val - fabs(lo));
+                    jw_dbl(d->w, "upper", val + fabs(up));
+                    jw_end_obj(d->w);
+                }
+                jw_obj(d->w, "tolerance_offsets");
+                jw_dbl(d->w, "minus", fabs(lo));
+                jw_dbl(d->w, "plus", fabs(up));
+                jw_end_obj(d->w);
+                jw_str(d->w, "tolerance_type",
+                       tt == PRO_TOL_PLUS_MINUS ? "PLUS_MINUS" : tt == PRO_TOL_LIMITS ? "LIMITS" :
+                       tt == PRO_TOL_PLUS_MINUS_SYM ? "PLUS_MINUS_SYM" : tt == PRO_DIM_TOL_BASIC ? "BASIC" :
+                       tt == PRO_DIM_TOL_SYM_SUPERSCRIPT ? "SYM_SUPERSCRIPT" : "OTHER");
+            }
+        }
+    }
     jw_end_obj(d->w);
     (*dv->count)++;
     return PRO_TK_NO_ERROR;
@@ -572,11 +607,13 @@ void collect_drawing(Sb *out, const Ctx *c, const Query *q)
     jw_obj(&w, NULL);
     jw_bool(&w, "ok", 1);
     jw_str(&w, "fileName", c->fileName);
-    jw_bool(&w, "partial", bad_notes || bad_dims || bad_tables);
+    jw_bool(&w, "partial", bad_notes || bad_dims || bad_tables || d.nmiss > 0);
     jw_arr(&w, "partial_missing");           /* empty when everything was readable */
     if (bad_notes)  jw_str(&w, NULL, "notes");
     if (bad_dims)   jw_str(&w, NULL, "dimensions");
     if (bad_tables) jw_str(&w, NULL, "tables");
+    for (i = 0; i < d.nmiss; i++) jw_str(&w, NULL, d.miss[i]);
+    if (d.miss_over) { char more[48]; sprintf(more, "... and %d more dimension values", d.miss_over); jw_str(&w, NULL, more); }
     jw_end_arr(&w);
     jw_int(&w, "sheetCount", nsheets);
     jw_int(&w, "viewCount", nviews);

@@ -20,7 +20,7 @@
 #include "textutil.h"
 
 #define CPDM_SERVICE  "creopdm-toolkit"
-#define CPDM_VERSION  "0.6.5"
+#define CPDM_VERSION  "0.7.1"
 
 /* Sb, Jw (JSON writer), w2u/u2w, ASCII helpers and query parsing live in textutil.h (no Toolkit dependency). */
 
