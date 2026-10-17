@@ -259,7 +259,7 @@ void collect_sketch(Sb *out, const Ctx *c, const Query *q)
     ProSection sec = (ProSection)c->mdl;
     ProIntlist ids = NULL;
     int n = 0, i, k;
-    int counts[8] = { 0 }, total = 0, constr_n = 0, items_n = 0, truncated = 0, construction_n = 0;
+    int counts[8] = { 0 }, total = 0, items_n = 0, truncated = 0, construction_n = 0;
     int cnt_closed = 0, cnt_open = 0, loops_ok = 1;
     Box box;
     Vtx *vt = NULL;
@@ -271,7 +271,7 @@ void collect_sketch(Sb *out, const Ctx *c, const Query *q)
     ProError rc;
     char miss[12][480], note[4][480];
     int nnote = 0;
-    int nmiss = 0, ent_ok = 1, regen = 0, nfail = 0, ids_heap = 0;
+    int nmiss = 0, ent_ok = 1, nfail = 0, ids_heap = 0;
     SynEnt *syn = NULL;
 #define MISS(...) do { if (nmiss < 12) { _snprintf(miss[nmiss], sizeof miss[0], __VA_ARGS__); miss[nmiss][sizeof miss[0] - 1] = 0; nmiss++; } } while (0)
 #define NOTE(...) do { if (nnote < 4) { _snprintf(note[nnote], sizeof note[0], __VA_ARGS__); note[nnote][sizeof note[0] - 1] = 0; nnote++; } } while (0)
@@ -606,7 +606,6 @@ void collect_sketch(Sb *out, const Ctx *c, const Query *q)
                     for (j = 0; j < nr && ents; j++) jw_int(&w, NULL, ents[j]);
                     jw_end_arr(&w);
                     jw_end_obj(&w);
-                    constr_n++;
                 }
                 if (ents) ProArrayFree((ProArray *)&ents);
                 if (senses) ProArrayFree((ProArray *)&senses);
@@ -631,7 +630,7 @@ void collect_sketch(Sb *out, const Ctx *c, const Query *q)
     jw_null(&w, "over_constrained");
     jw_null(&w, "strong_dimensions");
     jw_null(&w, "weak_dimensions");
-    if (regen) jw_bool(&w, "regenerated", 1); else jw_null(&w, "regenerated");   /* true only when this call had to regenerate */
+    jw_null(&w, "regenerated");                    /* never regenerated, so not known */
     jw_end_obj(&w);
 
     if (nmiss) {
@@ -660,7 +659,6 @@ void collect_sketch(Sb *out, const Ctx *c, const Query *q)
     sb_puts(out, "\n");
     sb_free(&body);
     sb_free(&items);
-    (void)constr_n;
 }
 
 /* ---- /sketch_probe: diagnostic. Return codes of the section readers on this handle, so a failing entity read can be
