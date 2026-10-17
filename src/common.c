@@ -64,6 +64,7 @@ const char *mdl_type_str(ProMdlType t)
     case PRO_MDL_REPORT:   return "REPORT";
     case PRO_MDL_MARKUP:   return "MARKUP";
     case PRO_MDL_DIAGRAM:  return "DIAGRAM";
+    case PRO_MDL_2DSECTION: return "SECTION";
     default:               return "OTHER";
     }
 }
@@ -77,6 +78,7 @@ static const char *mdl_ext(ProMdlType t)
     case PRO_MDL_LAYOUT:   return ".lay";
     case PRO_MDL_DWGFORM:  return ".frm";
     case PRO_MDL_DIAGRAM:  return ".dgm";
+    case PRO_MDL_2DSECTION: return ".sec";
     default:               return "";
     }
 }
@@ -128,6 +130,33 @@ void ctx_fallback_name(Ctx *c, const char *requested)
 }
 /* True if the file header says this is a cabling harness part ("#UGC:2 PART/HARNESS_PART ...").
    Only the first line (<= 200 bytes) is read; any read problem means "not detected". */
+/* Release the running Creo reports (user_initialize's version string), e.g. for identity.creo_release */
+char g_creo_version[64];
+
+/* Release the FILE was saved with: the second header line reads "#Creo  TM  13  (c) 2026 by PTC Inc.  All Rights Reserved. 13.4.1.0".
+   Returns 1 and fills out ("13.4.1.0") when found. */
+int file_saved_release_w(const wchar_t *wpath, char *out, int outsz)
+{
+    FILE *f = _wfopen(wpath, L"rb");
+    char buf[1025], *p, *eol, *last;
+    size_t n;
+    out[0] = 0;
+    if (!f) return 0;
+    n = fread(buf, 1, 1024, f);
+    fclose(f);
+    buf[n] = 0;
+    p = strstr(buf, "#Creo");
+    if (!p) return 0;
+    eol = p;
+    while (*eol && *eol != 10 && *eol != 13) eol++;
+    *eol = 0;
+    last = strrchr(p, ' ');
+    if (!last || !last[1]) return 0;
+    strncpy(out, last + 1, outsz - 1);
+    out[outsz - 1] = 0;
+    return out[0] != 0;
+}
+
 int file_is_harness_w(const wchar_t *wpath)
 {
     FILE *f = _wfopen(wpath, L"rb");

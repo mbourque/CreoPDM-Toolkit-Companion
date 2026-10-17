@@ -20,13 +20,15 @@
 #include "textutil.h"
 
 #define CPDM_SERVICE  "creopdm-toolkit"
-#define CPDM_VERSION  "0.4.1"
+#define CPDM_VERSION  "0.6.4"
 
 /* Sb, Jw (JSON writer), w2u/u2w, ASCII helpers and query parsing live in textutil.h (no Toolkit dependency). */
 
 /* ---------- helpers ---------- */
 int   is_noname_u(const char *u);                    /* "no_name" (any case): Creo placeholder for unnamed hidden features */
-int   file_is_harness_w(const wchar_t *wpath);       /* first line of the file says PART/HARNESS_PART */
+extern char g_creo_version[64];                       /* version string given to user_initialize */
+int   file_saved_release_w(const wchar_t *wpath, char *out, int outsz);   /* "#Creo ... 13.4.1.0" header -> "13.4.1.0" */
+int   file_is_harness_w(const wchar_t *wpath);      /* first line of the file says PART/HARNESS_PART */
 void  logf_(const char *fmt, ...);                   /* %TEMP%\creopdm_toolkit.log */
 void  emit_error(Sb *out, const char *msg);          /* resets *out to {"ok":false,...} */
 void  emit_errorf(Sb *out, const char *fmt, ...);
@@ -55,6 +57,8 @@ void collect_mass      (Sb *out, const Ctx *c, const Query *q);
 void collect_materials (Sb *out, const Ctx *c, const Query *q);
 void collect_features  (Sb *out, const Ctx *c, const Query *q);
 void collect_dimensions(Sb *out, const Ctx *c, const Query *q);
+void collect_sketch    (Sb *out, const Ctx *c, const Query *q);
+void collect_sketch_probe(Sb *out, const Ctx *c, const Query *q);
 void collect_relations (Sb *out, const Ctx *c, const Query *q);
 void collect_structure (Sb *out, const Ctx *c, const Query *q);
 void collect_constraints(Sb *out, const Ctx *c, const Query *q);

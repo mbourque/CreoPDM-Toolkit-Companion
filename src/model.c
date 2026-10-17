@@ -86,10 +86,18 @@ void collect_identity(Sb *out, const Ctx *c, const Query *q)
     jw_str(&w, "generic_name", "");     /* not derived: Toolkit has no direct getter here */
     jw_str(&w, "instance_name", "");
     jw_str(&w, "model_type", c->typeStr);
+    if (c->type == PRO_MDL_2DSECTION) {
+        char rel[40];
+        jw_str(&w, "creo_release", g_creo_version[0] ? g_creo_version : NULL);                 /* the running Creo */
+        rel[0] = 0;
+        if (origin[0]) file_saved_release_w(origin, rel, sizeof rel);
+        jw_str(&w, "saved_release", rel[0] ? rel : NULL);                                      /* release the file was saved with */
+    }
     {
         /* model_role from what Toolkit can tell; "" when it cannot. */
         const char *role = "";
         const char *sub = NULL;
+        char subbuf[24];
         ProBoolean skel = PRO_B_FALSE;
         if (ProMdlSubtypeGet(c->mdl, &st) == PRO_TK_NO_ERROR) {
             switch (st) {
@@ -100,8 +108,21 @@ void collect_identity(Sb *out, const Ctx *c, const Query *q)
             case PROMDLSTYPE_ASM_DESIGN:      sub = "ASM_DESIGN"; break;
             case PROMDLSTYPE_ASM_INTERCHANGE: sub = "ASM_INTERCHANGE"; break;
             case PROMDLSTYPE_MFG_NCASM:       sub = "MFG_NCASM"; break;
-            case PROMDLSTYPE_NONE:            sub = "NONE"; break;
-            default:                          sub = "OTHER"; break;
+            case PROMDLSTYPE_NONE:            sub = NULL; break;                      /* no subtype: null, not the string NONE */
+            case PROMDLSTYPE_ASM_PROCPLAN:    sub = "ASM_PROCPLAN"; role = "PROCESS"; break;   /* "Process" assembly (header: ASSEMBLY/PROCESS) */
+            case PROMDLSTYPE_MFG_PROCPLAN:    sub = "MFG_PROCPLAN"; role = "PROCESS"; break;
+            case PROMDLSTYPE_ASM_INTCHG_SUBST: sub = "ASM_INTCHG_SUBST"; break;
+            case PROMDLSTYPE_ASM_INTCHG_FUNC: sub = "ASM_INTCHG_FUNC"; break;
+            case PROMDLSTYPE_ASM_NCMODEL:     sub = "ASM_NCMODEL"; break;
+            case PROMDLSTYPE_ASM_VERIFY:      sub = "ASM_VERIFY"; break;
+            case PROMDLSTYPE_ASM_FIGURE:      sub = "ASM_FIGURE"; break;
+            case PROMDLSTYPE_ASM_CONFIGURE_ASM: sub = "ASM_CONFIGURE"; break;
+            case PROMDLSTYPE_ECAD_ASM:        sub = "ECAD_ASM"; break;
+            case PROMDLSTYPE_ECAD_BOARD_PART: sub = "ECAD_BOARD_PART"; break;
+            case PROMDLSTYPE_TRAY_ASSEM:      sub = "TRAY_ASSEM"; break;
+            case PROMDLSTYPE_INSTR_ASM:       sub = "INSTR_ASM"; break;
+            case PROMDLSTYPE_BULK:            sub = "BULK"; break;
+            default:                          _snprintf(subbuf, sizeof subbuf, "SUBTYPE_%d", (int)st); subbuf[sizeof subbuf - 1] = 0; sub = subbuf; break;   /* never hide an unmapped value */
             }
         }
         if ((c->type == PRO_MDL_PART || c->type == PRO_MDL_ASSEMBLY) &&

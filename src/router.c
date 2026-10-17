@@ -6,6 +6,7 @@
 #define M_A 2
 #define M_M 4
 #define M_D 8
+#define M_S 16                 /* 2D section (.sec): only identity and sketch apply */
 #define M_ALL (M_P | M_A | M_M | M_D)
 
 /* mask = types the domain applies to; all_mask = types it is included for in a default /collect */
@@ -13,7 +14,9 @@ typedef struct { const char *name; CollectFn fn; unsigned mask; unsigned all_mas
 
 /* name uses '_' ; URL path and ?domains= accept '-' too (simp-reps / simp_reps) */
 static const Domain DOMAINS[] = {
-    { "identity",    collect_identity,    M_ALL, M_ALL },
+    { "identity",    collect_identity,    M_ALL | M_S, M_ALL | M_S },
+    { "sketch",      collect_sketch,      M_S, M_S },
+    { "sketch_probe", collect_sketch_probe, M_S, 0 },   /* diagnostic, explicit only */
     { "units",       collect_units,       M_P | M_A | M_M, M_P | M_A | M_M },
     { "parameters",  collect_parameters,  M_ALL, M_ALL },
     { "mass",        collect_mass,        M_P | M_A, M_P | M_A },
@@ -102,6 +105,7 @@ static unsigned type_bit(ProMdlType t)
     case PRO_MDL_ASSEMBLY: return M_A;
     case PRO_MDL_MFG:      return M_M;
     case PRO_MDL_DRAWING:  return M_D;
+    case PRO_MDL_2DSECTION: return M_S;
     default:               return 0;
     }
 }
@@ -146,7 +150,7 @@ static void do_collect(Sb *out, const Ctx *c, const Query *q)
     char dom[256], tok[48];
     Jw w, bw;
     Sb body = { 0 };
-    int explicit_list = q_get(q, "domains", dom, sizeof dom) && dom[0] && strcmp(dom, "all") != 0;
+    int explicit_list = q_get_dec(q, "domains", dom, sizeof dom) && dom[0] && strcmp(dom, "all") != 0;
     unsigned tb = type_bit(c->type);
 
     jw_init(&bw, &body);
@@ -176,6 +180,10 @@ static void do_collect(Sb *out, const Ctx *c, const Query *q)
                     emit_errorf(&r, "unknown domain '%s'", tok);
                     trim_nl(&r);
                     jw_raw(&bw, tok, r.p);
+                } else if (tb == M_S && !(d->mask & M_S)) {
+                    emit_errorf(&r, "domain '%s' does not apply to a SECTION (.sec); use identity and sketch", d->name);
+                    trim_nl(&r);
+                    jw_raw(&bw, d->name, r.p);
                 } else {
                     { double t0 = now_ms(); int di = (int)(d - DOMAINS); d->fn(&r, c, q); g_tm.dom_ms[di] = now_ms() - t0; g_tm.dom_ran[di] = 1; }   /* collector reports its own not-applicable error */
                     trim_nl(&r);
@@ -217,6 +225,7 @@ static int parse_file_name(const char *fn, ProMdlName base, ProMdlfileType *ft)
     else if (strcmp(dot, ".asm") == 0) *ft = PRO_MDLFILE_ASSEMBLY;
     else if (strcmp(dot, ".drw") == 0) *ft = PRO_MDLFILE_DRAWING;
     else if (strcmp(dot, ".mfg") == 0) *ft = PRO_MDLFILE_MFG;
+    else if (strcmp(dot, ".sec") == 0) *ft = PRO_MDLFILE_2DSECTION;
     else return 0;
     *dot = 0;
     (void)end;
@@ -245,7 +254,7 @@ static int resolve_target(const char *fn, const char *path, ProMdl *out_mdl, int
 
     *retrieved = 0;
     if (!parse_file_name(fn, base, &ft)) {
-        _snprintf(err, errsz, "fileName '%s' must end in .prt/.asm/.drw/.mfg (optionally .N), be valid UTF-8 and fit the name length", fn);
+        _snprintf(err, errsz, "fileName '%s' must end in .prt/.asm/.drw/.mfg/.sec (optionally .N), be valid UTF-8 and fit the name length", fn);
         err[errsz - 1] = 0;
         return 0;
     }
@@ -340,7 +349,7 @@ static int route_harness(const char *path, const Query *q, const char *fn, const
     if (strcmp(path, "/identity") == 0) { harness_identity(out, fn, full); return 200; }
     if (strcmp(path, "/collect") != 0) { harness_skip(out, fn); return 200; }
 
-    first_all = !(q_get(q, "domains", dom, sizeof dom) && dom[0] && strcmp(dom, "all") != 0);
+    first_all = !(q_get_dec(q, "domains", dom, sizeof dom) && dom[0] && strcmp(dom, "all") != 0);
     jw_init(&bw, &body);
     jw_obj(&bw, NULL);
     if (first_all) {
@@ -613,6 +622,9 @@ int route_request(const char *method, const char *path, const char *query, Sb *o
             do_collect(out, &c, &q);
         } else {
             d = find_domain(path + 1);
+            if (c.type == PRO_MDL_2DSECTION && !(d->mask & M_S))
+                emit_errorf(out, "domain '%s' does not apply to a SECTION (.sec); use identity and sketch", d->name);
+            else
             { double t0 = now_ms(); int di = (int)(d - DOMAINS); d->fn(out, &c, &q); g_tm.dom_ms[di] = now_ms() - t0; g_tm.dom_ran[di] = 1; }
         }
 
