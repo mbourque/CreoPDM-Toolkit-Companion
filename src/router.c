@@ -19,7 +19,8 @@ static const Domain DOMAINS[] = {
     { "mass",        collect_mass,        M_P | M_A, M_P | M_A },
     { "materials",   collect_materials,   M_P, M_P },
     { "features",    collect_features,    M_P | M_A | M_D, M_P | M_A },   /* DRAWING: GET /features aliases /drawing; omitted from default collect */
-    { "relations",   collect_relations,   M_P | M_A, M_P | M_A },
+    { "dimensions",  collect_dimensions,  M_P | M_A, M_P | M_A },
+    { "relations",   collect_relations,  M_P | M_A, M_P | M_A },
     { "structure",   collect_structure,   M_A, M_A },
     { "constraints", collect_constraints, M_A, M_A },
     { "simp_reps",   collect_simpreps,    M_A, M_A },

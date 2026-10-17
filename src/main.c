@@ -53,20 +53,20 @@ static ProError act_app(uiCmdCmdId command, uiCmdValue *value, void *data)
 /* "CreoPDM Browse": compact file explorer in a navigator pane, with the active model as context */
 static int g_pane_added;
 
-static ProError act_browse(uiCmdCmdId command, uiCmdValue *value, void *data)
+/* quiet: automatic start-up attempt (no user messages; returns nonzero when the pane exists) */
+static int browse_show(int quiet)
 {
     char base[1024], url[2048], q[1400];
     wchar_t wurl[2048];
     size_t bl;
     Ctx c;
     ProError rc;
-    (void)command; (void)value; (void)data;
 
     if (!getenv_utf8("CREOPDM_EXPLORER_URL", base, sizeof base) || !base[0]) {                 /* default: CREOPDM_URL + "embed/explorer" */
         if (!getenv_utf8("CREOPDM_URL", base, sizeof base - 32) || !base[0]) {
-            ProMessageDisplay(MSGFILE, "CPDM_NO_URL");
+            if (!quiet) ProMessageDisplay(MSGFILE, "CPDM_NO_URL");
             logf_("Browse: CREOPDM_URL / CREOPDM_EXPLORER_URL is not set");
-            return PRO_TK_NO_ERROR;
+            return -1;
         }
         bl = strlen(base);
         if (bl && base[bl - 1] != '/') strcat(base, "/");
@@ -94,7 +94,7 @@ static ProError act_browse(uiCmdCmdId command, uiCmdValue *value, void *data)
     }
     _snprintf(url, sizeof url, "%s%s", base, q);
     url[sizeof url - 1] = 0;
-    if (!u2w(url, wurl, 2048)) { logf_("Browse: the explorer address is not valid text"); ProMessageDisplay(MSGFILE, "CPDM_BROWSE_FAIL"); return PRO_TK_NO_ERROR; }
+    if (!u2w(url, wurl, 2048)) { logf_("Browse: the explorer address is not valid text"); if (!quiet) ProMessageDisplay(MSGFILE, "CPDM_BROWSE_FAIL"); return -1; }
 
     if (!g_pane_added) {
         rc = ProNavigatorpaneBrowserAdd((char *)"CreoPDM", NULL, wurl);
@@ -104,8 +104,40 @@ static ProError act_browse(uiCmdCmdId command, uiCmdValue *value, void *data)
         rc = ProNavigatorpaneBrowserURLSet((char *)"CreoPDM", wurl);
         logf_("Browse: ProNavigatorpaneBrowserURLSet(%s) -> %d", url, (int)rc);
     }
-    if (rc != PRO_TK_NO_ERROR) ProMessageDisplay(MSGFILE, "CPDM_BROWSE_FAIL");
+    if (rc != PRO_TK_NO_ERROR && !quiet) ProMessageDisplay(MSGFILE, "CPDM_BROWSE_FAIL");
+    return rc == PRO_TK_NO_ERROR;
+}
+
+static ProError act_browse(uiCmdCmdId command, uiCmdValue *value, void *data)
+{
+    (void)command; (void)value; (void)data;
+    browse_show(0);
     return PRO_TK_NO_ERROR;
+}
+
+/* Start-up: add the navigator pane without a click. The navigator may not exist yet while user_initialize runs, so retry on a
+   timer (main thread) every 2 s, up to 30 times. CREOPDM_AUTO_NAV=0 turns this off. */
+static UINT_PTR g_auto_timer;
+static int      g_auto_tries;
+
+static VOID CALLBACK auto_nav_tick(HWND h, UINT m, UINT_PTR id, DWORD t)
+{
+    int r;
+    (void)h; (void)m; (void)t;
+    r = browse_show(1);
+    if (r != 0 || ++g_auto_tries >= 30) {                    /* done, not configured (-1), or out of tries */
+        KillTimer(NULL, id);
+        g_auto_timer = 0;
+        logf_("Auto navigator: %s after %d attempt(s)", r > 0 ? "added" : "gave up", g_auto_tries + 1);
+    }
+}
+
+static void auto_nav_start(void)
+{
+    char v[8];
+    if (GetEnvironmentVariableA("CREOPDM_AUTO_NAV", v, sizeof v) > 0 && v[0] == '0') return;
+    g_auto_timer = SetTimer(NULL, 0, 2000, auto_nav_tick);
+    if (!g_auto_timer) logf_("Auto navigator: SetTimer failed (%lu)", GetLastError());
 }
 
 
@@ -134,10 +166,16 @@ int user_initialize(int argc, char *argv[], char *version, char *build, wchar_t 
     add_cmd("creopdm_app",      (uiCmdCmdActFn)act_app,    "CPDM_APP_LABEL",      "CPDM_APP_HELP",      "CPDM_APP_DESC");
     add_cmd("creopdm_browse",   (uiCmdCmdActFn)act_browse, "CPDM_BROWSE_LABEL",   "CPDM_BROWSE_HELP",   "CPDM_BROWSE_DESC");
 
+    auto_nav_start();
+
     /* HTTP is best-effort: failure must never stop the app from loading. */
     if (http_start()) ProMessageDisplay(MSGFILE, "CPDM_HTTP_UP");
     else              ProMessageDisplay(MSGFILE, "CPDM_HTTP_FAIL");
     return 0;
 }
 
-void user_terminate(void) { http_stop(); }
+void user_terminate(void)
+{
+    if (g_auto_timer) { KillTimer(NULL, g_auto_timer); g_auto_timer = 0; }
+    http_stop();
+}

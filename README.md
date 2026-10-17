@@ -132,6 +132,7 @@ The service binds **127.0.0.1 only**. `GET` and `POST` are equivalent. Every res
 | `/mass` | x | x | | | `{ok, fileName, mass:{mass, volume, surface_area, density, gravity_center[3], principal_moments[3], cg_inertia_tensor[3][3]}, method}` |
 | `/materials` | x | | | | `{ok, fileName, materials:{current, names[]}}` |
 | `/features` | x | x | | x | `{ok, fileName, features:[{id, name, type, subtype, level, status, suppressed}]}`; for a drawing this is the same inventory as `/drawing` |
+| `/dimensions` | x | x | | | `{ok, fileName, dimensionCount, dimensions:[{symbol, value, value_displayed, units, type, feature_id, feature_name, feature_type}]}`. Model (feature) dimensions only, not drawing annotations. `feature_id` is the id `/features` uses (e.g. 67 for CHAMFER (67)). `units` is the model length unit, `deg` for angles. Features `/features` does not list (invisible, `no_name`, components) are skipped. `?reference=1` adds reference dimensions (`reference:true`). Part of the default `/collect` for PART/ASSEMBLY. |
 | `/relations` | x | x | | | `{ok, fileName, normal[], post_regeneration[], features:[{feature_id, feature_name, relations[]}], errors[]}` |
 | `/structure` | | x | | | `{ok, fileName, componentCount, skippedNoModel, recurse, unexpandedSubassemblies, partial, components:[...]}`; `?recurse=0` for top level only |
 | `/bom` | | x | | | `{ok, fileName, partial, ..., bom:[ASSEMBLY_ROOT node]}` |
@@ -339,6 +340,7 @@ A harness model cannot be opened on its own in Creo ("open the cabling assembly 
 | `src/structure.c` | component walker (shared by structure, BOM, constraints, mass) and `/structure` |
 | `src/model.c` | identity, units, parameters, mass, materials |
 | `src/features.c` | features (with group nesting) and relations |
+| `src/dimensions.c` | model dimensions per feature |
 | `src/assembly.c` | constraints, simplified representations |
 | `src/bom.c` | nested BOM |
 | `src/drawing.c` | drawing inventory |

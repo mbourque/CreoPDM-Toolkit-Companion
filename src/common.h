@@ -20,7 +20,7 @@
 #include "textutil.h"
 
 #define CPDM_SERVICE  "creopdm-toolkit"
-#define CPDM_VERSION  "0.3.2"
+#define CPDM_VERSION  "0.4.1"
 
 /* Sb, Jw (JSON writer), w2u/u2w, ASCII helpers and query parsing live in textutil.h (no Toolkit dependency). */
 
@@ -54,6 +54,7 @@ void collect_parameters(Sb *out, const Ctx *c, const Query *q);
 void collect_mass      (Sb *out, const Ctx *c, const Query *q);
 void collect_materials (Sb *out, const Ctx *c, const Query *q);
 void collect_features  (Sb *out, const Ctx *c, const Query *q);
+void collect_dimensions(Sb *out, const Ctx *c, const Query *q);
 void collect_relations (Sb *out, const Ctx *c, const Query *q);
 void collect_structure (Sb *out, const Ctx *c, const Query *q);
 void collect_constraints(Sb *out, const Ctx *c, const Query *q);
