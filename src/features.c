@@ -48,6 +48,7 @@ typedef struct {
     const char *status;
     int         suppressed;
     int         emitted;
+    int         after_insert;    /* insert mode active and this feature is after the insertion point */
 } FRow;
 
 typedef struct { FRow *rows; int n, cap; ProSolid owner; } FCtx;
@@ -104,6 +105,7 @@ static void emit_frow(Jw *w, FRow *r, int level)
     jw_int(w, "level", level);
     jw_str(w, "status", r->status);
     jw_bool(w, "suppressed", r->suppressed);
+    if (r->after_insert) jw_bool(w, "after_insert", 1);     /* only on affected rows (insert mode) */
     jw_end_obj(w);
     r->emitted = 1;
 }
@@ -133,7 +135,8 @@ void collect_features(Sb *out, const Ctx *c, const Query *q)
     Jw bw, w;
     FCtx fc;
     ProError rc;
-    int i;
+    int i, insert_active = 0, insert_rc = 0, after_id = 0, n_after = 0;
+    char after_name[160] = "";
 
     if (c->type == PRO_MDL_DRAWING) { collect_drawing(out, c, q); return; }
     if (c->type != PRO_MDL_PART && c->type != PRO_MDL_ASSEMBLY) {
@@ -147,6 +150,28 @@ void collect_features(Sb *out, const Ctx *c, const Query *q)
         emit_errorf(out, "ProSolidFeatVisit failed (%d)", (int)rc);
         free(fc.rows);
         return;
+    }
+
+    /* Insert mode ("Insert Here"): the features after the insertion point are not part of the model until insert mode
+       is cancelled. Toolkit reports them as SUPPRESSED (seen on Creo 13; INACTIVE is handled too) and has no call for the
+       insertion point itself, so it is inferred as the last feature that is neither suppressed nor inactive; every row
+       after it is marked after_insert. A feature the user suppressed on purpose right at the end of the tree cannot be
+       told apart from these (insert_mode.inferred says so). */
+    {
+        ProBoolean ins = PRO_B_FALSE;
+        ProError irc = ProInsertModeIsActive((ProSolid)c->mdl, &ins);
+        int last_ok = -1;
+        insert_rc = (int)irc;
+        insert_active = (irc == PRO_TK_NO_ERROR && ins == PRO_B_TRUE);
+        if (insert_active) {
+            for (i = 0; i < fc.n; i++)
+                if (strncmp(fc.rows[i].status, "SUPPRESSED", 10) != 0 && strcmp(fc.rows[i].status, "INACTIVE") != 0) last_ok = i;
+            for (i = 0; i < fc.n; i++) {
+                FRow *r = &fc.rows[i];
+                if (i > last_ok || strcmp(r->status, "INACTIVE") == 0) { r->after_insert = 1; n_after++; }
+            }
+            if (last_ok >= 0) { after_id = fc.rows[last_ok].id; strncpy(after_name, fc.rows[last_ok].name, sizeof after_name - 1); }
+        }
     }
 
     /* Tree order: each top-level feature (not inside a listed group) in feature order; a GROUP_HEAD is
@@ -171,6 +196,19 @@ void collect_features(Sb *out, const Ctx *c, const Query *q)
     jw_bool(&w, "ok", 1);
     jw_str(&w, "fileName", c->fileName);
     jw_raw(&w, "features", body.p);
+    jw_obj(&w, "insert_mode");                          /* additive: the model is saved with Insert Here active */
+    if (insert_rc == (int)PRO_TK_NO_ERROR) {
+        jw_bool(&w, "active", insert_active);
+        if (insert_active) {
+            if (after_id) jw_int(&w, "after_feature_id", after_id); else jw_null(&w, "after_feature_id");
+            jw_str(&w, "after_feature_name", after_name[0] ? after_name : NULL);
+            jw_int(&w, "inactive_count", n_after);
+            jw_bool(&w, "inferred", 1);                 /* insertion point inferred from the feature statuses */
+        }
+    } else {
+        jw_null(&w, "active");                          /* could not read */
+    }
+    jw_end_obj(&w);
     jw_end_obj(&w);
     sb_puts(out, "\n");
     sb_free(&body);
