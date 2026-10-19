@@ -124,7 +124,7 @@ The service binds **127.0.0.1 only**. `GET` and `POST` are equivalent. Every res
 
 | Endpoint | PART | ASM | MFG | DRW | Response (inner key = what CreoPDM stores) |
 |---|:-:|:-:|:-:|:-:|---|
-| `/health` | x | x | x | x | `{ok, service:"creopdm-toolkit", version, model:{fileName,type}\|null}` (`busy:true` if Creo is busy) |
+| `/health` | x | x | x | x | `{ok, service:"creopdm-toolkit", version, creo:{release:"13.4.1.0"}|null, model:{fileName,type}|null}` (`busy:true` if Creo is busy). `creo.release` is the running session, dotted like a saved model header (`ProEngineerDisplaydatecodeGet`); `null` if it cannot be read. `/collect` and `/open` answer `{ok:false, error_code:"newer_release", file_release, session_release}` when a file was saved in a newer release than the session\|null}` (`busy:true` if Creo is busy) |
 | `/model` | x | x | x | x | `{ok, fileName, type, model:{fileName,type}}` |
 | `/identity` | x | x | x | x | `{ok, fileName, identity:{file_name, common_name, full_name, generic_name, instance_name, origin, model_type, model_role, subtype, is_modified, version_stamp}}` |
 | `/units` | x | x | x | | `{ok, fileName, units:{system_name, length, mass, time, temperature, angle}}` |

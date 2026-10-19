@@ -162,6 +162,7 @@ int user_initialize(int argc, char *argv[], char *version, char *build, wchar_t 
 {
     (void)argc; (void)argv; (void)build; (void)errbuf;
     if (version) { strncpy(g_creo_version, version, sizeof g_creo_version - 1); g_creo_version[sizeof g_creo_version - 1] = 0; }
+    creo_release_init();                      /* dotted release for /health (best effort) */
 
     /* tab commands: failures are logged but never stop the app from loading */
     add_cmd("creopdm_app",      (uiCmdCmdActFn)act_app,    "CPDM_APP_LABEL",      "CPDM_APP_HELP",      "CPDM_APP_DESC");

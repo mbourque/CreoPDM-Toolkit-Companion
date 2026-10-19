@@ -134,9 +134,16 @@ static void handle_client(SOCKET c)
     json = run_on_main(method, target, qm ? qm : "", is_health ? 3000 : g_timeout_ms, &status);
     /* /health must still answer when Creo is busy */
     if (is_health && strstr(json, "Creo busy")) {
+        char busy[400];
         free(json);
-        json = _strdup("{\"ok\": true, \"service\": \"" CPDM_SERVICE "\", \"version\": \"" CPDM_VERSION
-                       "\", \"model\": null, \"busy\": true}\n");
+        if (g_creo_release[0])                           /* cached from an earlier answer, never read from this thread */
+            _snprintf(busy, sizeof busy, "{\"ok\": true, \"service\": \"" CPDM_SERVICE "\", \"version\": \"" CPDM_VERSION
+                      "\", \"creo\": {\"release\": \"%s\"}, \"model\": null, \"busy\": true}\n", g_creo_release);
+        else
+            _snprintf(busy, sizeof busy, "{\"ok\": true, \"service\": \"" CPDM_SERVICE "\", \"version\": \"" CPDM_VERSION
+                      "\", \"creo\": null, \"model\": null, \"busy\": true}\n");
+        busy[sizeof busy - 1] = 0;
+        json = _strdup(busy);
         status = 200;
     }
     send_response(c, status, json);

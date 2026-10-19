@@ -20,13 +20,16 @@
 #include "textutil.h"
 
 #define CPDM_SERVICE  "creopdm-toolkit"
-#define CPDM_VERSION  "0.8.1"
+#define CPDM_VERSION  "0.9.0"
 
 /* Sb, Jw (JSON writer), w2u/u2w, ASCII helpers and query parsing live in textutil.h (no Toolkit dependency). */
 
 /* ---------- helpers ---------- */
 int   is_noname_u(const char *u);                    /* "no_name" (any case): Creo placeholder for unnamed hidden features */
 extern char g_creo_version[64];                       /* version string given to user_initialize */
+extern char g_creo_release[32];                       /* running Creo, dotted ("13.4.1.0"); empty if unknown */
+void creo_release_init(void);
+int  release_compare(const char *a, const char *b);   /* -1/0/1 numeric, 2 if unparseable */
 int   file_saved_release_w(const wchar_t *wpath, char *out, int outsz);   /* "#Creo ... 13.4.1.0" header -> "13.4.1.0" */
 int   file_is_harness_w(const wchar_t *wpath);      /* first line of the file says PART/HARNESS_PART */
 void  logf_(const char *fmt, ...);                   /* %TEMP%\creopdm_toolkit.log */

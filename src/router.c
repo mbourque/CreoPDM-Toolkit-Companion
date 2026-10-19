@@ -133,6 +133,9 @@ static void do_health(Sb *out, const Ctx *c)
     jw_bool(&w, "ok", 1);
     jw_str(&w, "service", CPDM_SERVICE);
     jw_str(&w, "version", CPDM_VERSION);
+    creo_release_init();                      /* no-op once known */
+    if (g_creo_release[0]) { jw_obj(&w, "creo"); jw_str(&w, "release", g_creo_release); jw_end_obj(&w); }
+    else jw_null(&w, "creo");                /* could not be read: never guessed */
     if (c->has) {
         jw_obj(&w, "model");
         jw_str(&w, "fileName", c->fileName);
@@ -235,6 +238,26 @@ static int parse_file_name(const char *fn, ProMdlName base, ProMdlfileType *ft)
 
 /* Set by resolve_target when the requested file is a cabling harness (main thread only). */
 static int  g_is_harness;
+/* Set by resolve_target when a failed retrieve is because the file was saved in a newer release than this session. */
+static int  g_newer;
+static char g_file_release[40];
+static void emit_resolve_error(Sb *out, const char *msg)
+{
+    if (g_newer) {
+        Jw w;
+        jw_init(&w, out);
+        jw_obj(&w, NULL);
+        jw_bool(&w, "ok", 0);
+        jw_str(&w, "error", msg);
+        jw_str(&w, "error_code", "newer_release");
+        jw_str(&w, "file_release", g_file_release);
+        jw_str(&w, "session_release", g_creo_release[0] ? g_creo_release : NULL);
+        jw_end_obj(&w);
+        sb_puts(out, "\n");
+    } else {
+        emit_error(out, msg);
+    }
+}
 static char g_harness_full[1700];
 
 
@@ -243,7 +266,7 @@ static char g_harness_full[1700];
 static int resolve_target(const char *fn, const char *path, ProMdl *out_mdl, int *retrieved,
                           char *err, int errsz)
 {
-    g_is_harness = 0; g_harness_full[0] = 0;
+    g_is_harness = 0; g_harness_full[0] = 0; g_newer = 0; g_file_release[0] = 0;
     ProMdlName base;
     ProMdlfileType ft = PRO_MDLFILE_UNUSED;
     ProMdl m = NULL;
@@ -292,7 +315,15 @@ static int resolve_target(const char *fn, const char *path, ProMdl *out_mdl, int
     rc = ProMdlFiletypeLoad(wp, ft, PRO_B_FALSE, &m);
     if (rc != PRO_TK_NO_ERROR || !m) {
         DWORD attr = GetFileAttributesW(wp);
-        if (attr == INVALID_FILE_ATTRIBUTES)
+        char frel[40];
+        creo_release_init();
+        if (attr != INVALID_FILE_ATTRIBUTES && g_creo_release[0] && file_saved_release_w(wp, frel, sizeof frel) &&
+            release_compare(frel, g_creo_release) == 1) {          /* saved by a newer Creo than this session */
+            g_newer = 1;
+            strncpy(g_file_release, frel, sizeof g_file_release - 1);
+            _snprintf(err, errsz, "newer_release: %s was saved in Creo %s; this session is %s (ProMdlFiletypeLoad=%d)",
+                      fn, frel, g_creo_release, (int)rc);
+        } else if (attr == INVALID_FILE_ATTRIBUTES)
             _snprintf(err, errsz, "file_not_found: %s (ProMdlFiletypeLoad=%d)", full, (int)rc);
         else if (file_is_harness_w(wp)) {   /* same check after a failed load, in case it could not run before */
             g_is_harness = 1; strncpy(g_harness_full, full, sizeof g_harness_full - 1);
@@ -431,7 +462,7 @@ static int do_open(const Query *q, Sb *out)
     }
     if (!fn[0]) { emit_error(out, "pass fileName= and/or path= to open a model"); return 200; }
 
-    if (!resolve_target(fn, pth, &target, &retrieved, emsg, sizeof emsg)) { emit_error(out, emsg); return 200; }
+    if (!resolve_target(fn, pth, &target, &retrieved, emsg, sizeof emsg)) { emit_resolve_error(out, emsg); return 200; }
     ctx_for_model(&c, target);
     if (!c.has) { emit_errorf(out, "model handle for %s is not usable", fn); return 200; }
 
@@ -596,7 +627,7 @@ int route_request(const char *method, const char *path, const char *query, Sb *o
             t1 = now_ms();
             if (!resolve_target(fn, pth, &target, &retrieved, emsg, sizeof emsg)) {
                 if (g_is_harness) route_harness(path, &q, fn, g_harness_full, out);   /* identity ok, rest skipped */
-                else emit_error(out, emsg);
+                else emit_resolve_error(out, emsg);
                 g_tm.retrieve_ms = now_ms() - t1;
                 g_tm.total_ms = now_ms() - t_start;
                 append_timings(out);

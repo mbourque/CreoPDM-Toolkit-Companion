@@ -1,5 +1,7 @@
 /* common.c - logging, error envelopes, model context (text/JSON helpers are in textutil.c) */
 #include "common.h"
+#include <ProUtil.h>
+#include <ProArray.h>
 
 
 /* ---------- misc ---------- */
@@ -168,4 +170,44 @@ int file_is_harness_w(const wchar_t *wpath)
     hdr[n] = 0;
     for (i = 0; i < n; i++) if (hdr[i] == 10 || hdr[i] == 13) { hdr[i] = 0; break; }
     return strncmp(hdr, "#UGC:", 5) == 0 && strstr(hdr, "HARNESS") != NULL;
+}
+
+/* ---- running Creo release as a dotted string ("13.4.1.0"), the same form Creo writes in a saved model's header ---- */
+char g_creo_release[32];
+
+/* first "d.d.d.d" in s (digits and dots only, exactly four numbers), or 0 */
+static int find_dotted4(const char *s, char *out, int outsz)
+{
+    const char *p = s;
+    while (*p) {
+        if (*p >= '0' && *p <= '9' && (p == s || !((p[-1] >= '0' && p[-1] <= '9') || p[-1] == '.'))) {
+            const char *q = p;
+            int dots = 0;
+            while ((*q >= '0' && *q <= '9') || (*q == '.' && q[1] >= '0' && q[1] <= '9')) { if (*q == '.') dots++; q++; }
+            if (dots == 3 && (int)(q - p) < outsz) { memcpy(out, p, (size_t)(q - p)); out[q - p] = 0; return 1; }
+            p = q;
+        } else p++;
+    }
+    return 0;
+}
+
+void creo_release_init(void)
+{
+    char *dc = NULL;
+    if (g_creo_release[0]) return;
+    if (ProEngineerDisplaydatecodeGet(&dc) == PRO_TK_NO_ERROR && dc) {
+        logf_("Creo datecode string: '%s'", dc);
+        if (!find_dotted4(dc, g_creo_release, sizeof g_creo_release)) g_creo_release[0] = 0;   /* not in dotted form: do not guess */
+        ProStringFree(dc);
+    }
+}
+
+/* -1 / 0 / 1 comparing dotted releases numerically; 2 if either is not parseable */
+int release_compare(const char *a, const char *b)
+{
+    int x[4] = { 0 }, y[4] = { 0 }, i;
+    if (sscanf(a, "%d.%d.%d.%d", &x[0], &x[1], &x[2], &x[3]) != 4) return 2;
+    if (sscanf(b, "%d.%d.%d.%d", &y[0], &y[1], &y[2], &y[3]) != 4) return 2;
+    for (i = 0; i < 4; i++) if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
 }
